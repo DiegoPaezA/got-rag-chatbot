@@ -1,0 +1,10 @@
+[project]
+name = "got-rag-chatbot"
+version = "0.1.0"
+description = "A chatbot leveraging RAG techniques for enhanced responses."
+authors = [
+    { name = "Diego Páez", email = "diripar8@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
