@@ -177,7 +177,7 @@ class GraphValidator:
         """
         # Basic criteria
         if node.get("confidence") == "Low": return True
-        if node.get("type") in ["Lore", "Organization", "Object"]: return True
+        if node.get("type") in ["Lore", "Organization", "Object", "Creature"]: return True
         
         # Advanced criterion (close scores)
         scores = node.get("type_scores", {})
