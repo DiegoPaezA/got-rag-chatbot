@@ -11,13 +11,23 @@ from src.ingestion.scraper import FandomScraper, ScraperConfig
 from src.graph.builder import GraphBuilder
 from src.graph.validator import GraphValidator
 from src.graph.edge_builder import EdgeBuilder
+from src.rag.vector_store import VectorDBBuilder  # <--- NUEVO IMPORT
 
-# Configuración de logs para ver el progreso en la terminal
+# 1. Configuración global de logs
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S"
 )
+
+# 2. SILENCIADOR DE RUIDO EXTERNO (Vital para ver tqdm limpio)
+# Evita que httpx y google impriman cada petición POST
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("google.generativeai").setLevel(logging.WARNING)
+logging.getLogger("grpc").setLevel(logging.WARNING)
+logging.getLogger("chromadb").setLevel(logging.ERROR) # Chroma suele ser ruidoso con telemetría
+
 logger = logging.getLogger("Orchestrator")
 
 def main():
@@ -32,15 +42,20 @@ def main():
     
     # --- COMANDO: BUILD ---
     # Ejemplo: python main.py build --use-llm
-    parser_build = subparsers.add_parser("build", help="Build the Knowledge Graph")
+    parser_build = subparsers.add_parser("build", help="Build the Knowledge Graph (Nodes + Edges)")
     parser_build.add_argument("--use-llm", action="store_true", help="Enable Gemini/LLM validation for better accuracy")
     
+    # --- COMANDO: EMBED (NUEVO) ---
+    # Ejemplo: python main.py embed --reset
+    parser_embed = subparsers.add_parser("embed", help="Create Vector Database (ChromaDB)")
+    parser_embed.add_argument("--reset", action="store_true", help="Delete existing DB and rebuild from scratch")
+
     args = parser.parse_args()
 
     # --- RUTAS DE DATOS ---
-    RAW_DATA_PATH = "data/raw/wiki_dump.jsonl"  # Donde guarda el scraper
-    PROCESSED_DIR = "data/processed"           # Donde guardan los builders
-    CONFIG_PATH = "cfg/config.json"            # Donde están los prompts y settings
+    RAW_DATA_PATH = "data/raw/wiki_dump.jsonl"
+    PROCESSED_DIR = "data/processed"
+    CONFIG_PATH = "cfg/config.json"
 
     # ==========================================
     # 1. EJECUCIÓN DEL SCRAPER
@@ -48,7 +63,6 @@ def main():
     if args.command == "scrape":
         logger.info("🚀 Starting Scraping Pipeline...")
         
-        # Configuramos el scraper
         config = ScraperConfig(
             base_url="https://gameofthrones.fandom.com/api.php",
             user_agent="WesterosBot/2.0 (The Architect)",
@@ -56,8 +70,6 @@ def main():
         )
         
         scraper = FandomScraper(config)
-        
-        # Ejecutamos (el scraper maneja internamente el modo 'append' si se corta)
         scraper.run(output_path=RAW_DATA_PATH)
 
     # ==========================================
@@ -67,17 +79,13 @@ def main():
         logger.info("🏗️  Starting Graph Construction Pipeline...")
         
         # --- PASO 1: Extracción de Nodos (Heurística) ---
-        # Convierte el texto crudo en entidades JSONL preliminares
         logger.info("--- [STEP 1/3] Node Extraction (Heuristic) ---")
         builder = GraphBuilder(input_path=RAW_DATA_PATH, output_dir=PROCESSED_DIR)
         builder.build()
         
         # --- PASO 2: Validación con IA (Opcional) ---
-        # Si activas --use-llm, Gemini revisará los nodos con baja confianza
         if args.use_llm:
             logger.info("--- [STEP 2/3] LLM Validation (Gemini) ---")
-            
-            # Instanciamos el validador pasándole la config externa
             validator = GraphValidator(
                 data_dir=PROCESSED_DIR, 
                 config_path=CONFIG_PATH
@@ -87,12 +95,30 @@ def main():
             logger.info("--- [STEP 2/3] Skipping LLM Validation (using heuristics only) ---")
 
         # --- PASO 3: Construcción de Aristas (Schema-Aware) ---
-        # Conecta los nodos usando reglas lógicas, respetando los tipos validados
         logger.info("--- [STEP 3/3] Edge Generation (Schema-Aware) ---")
         edge_builder = EdgeBuilder(data_dir=PROCESSED_DIR)
         edge_builder.run()
         
-        logger.info("✅ Pipeline Finished Successfully! Data ready in 'data/processed/'")
+        logger.info("✅ Graph Build Finished! Nodes and Edges ready in 'data/processed/'")
+
+    # ==========================================
+    # 3. BASE DE DATOS VECTORIAL (EMBEDDINGS)
+    # ==========================================
+    elif args.command == "embed":
+        logger.info("🧠 Starting Vector Database Generation...")
+        
+        # Verificación de seguridad
+        docs_file = os.path.join(PROCESSED_DIR, "documents.jsonl")
+        if not os.path.exists(docs_file):
+            logger.error(f"❌ Documents file not found at {docs_file}. Run 'python main.py build' first.")
+            return
+
+        try:
+            vector_builder = VectorDBBuilder(data_dir=PROCESSED_DIR, config_path=CONFIG_PATH)
+            vector_builder.build(reset=args.reset)
+            logger.info("✅ Vector DB Ready! You can now query the RAG system.")
+        except Exception as e:
+            logger.error(f"❌ Failed to build Vector DB: {e}")
 
 if __name__ == "__main__":
     main()
