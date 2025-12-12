@@ -4,6 +4,14 @@
     "temperature": 0.0,
     "max_retries": 3
   },
+  "embedding_settings": {
+    "provider": "google", 
+    "model_name": "models/text-embedding-004",
+    "device": "cpu",
+    "chunk_size": 1000, 
+    "chunk_overlap": 200,
+    "separators": ["\n\n", "\n", ". ", " ", ""] 
+  },
   "graph_settings": {
     "allowed_types": [
       "Character", "House", "Organization", "Battle",
