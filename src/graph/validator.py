@@ -3,6 +3,7 @@ import os
 import time
 import random
 import logging
+from tqdm import tqdm
 from typing import List, Dict, Any, Set
 from dotenv import load_dotenv
 
@@ -95,7 +96,13 @@ class GraphValidator:
 
         # 5. Loop de Batches
         with open(self.checkpoint_path, "a", encoding="utf-8") as f_cp:
-            for i in range(0, len(candidates), self.batch_size):
+            process_iterator = tqdm(
+                range(0, len(candidates), self.batch_size), 
+                desc="🤖 Validating", 
+                unit="batch"
+            )
+
+            for i in process_iterator:
                 batch = candidates[i : i + self.batch_size]
                 
                 # Use retry logic here encapsulated
@@ -104,10 +111,9 @@ class GraphValidator:
                 # Immediate save to checkpoint
                 for node in validated_batch:
                     f_cp.write(json.dumps(node, ensure_ascii=False) + "\n")
-                f_cp.flush()
-                os.fsync(f_cp.fileno())
                 
-                logger.info(f"✅ Batch {i//self.batch_size + 1} done ({len(validated_batch)} nodes)")
+                f_cp.flush()
+                os.fsync(f_cp.fileno())                
                 time.sleep(1)  # Rate limit friendly
 
         self._consolidate_results(all_nodes)
