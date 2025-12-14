@@ -183,7 +183,7 @@ python main.py build --use-llm
 
 ### Knowledge Graph Pipeline
 
-```
+```markdown
 ┌─────────────┐
 │  Wiki API   │
 └──────┬──────┘
