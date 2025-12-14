@@ -8,6 +8,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Imports de nuestros módulos modulares
 from src.ingestion.scraper import FandomScraper, ScraperConfig
+from src.ingestion.neo4j_loader import Neo4jLoader
 from src.graph.builder import GraphBuilder
 from src.graph.validator import GraphValidator
 from src.graph.edge_builder import EdgeBuilder
@@ -49,6 +50,9 @@ def main():
     # Ejemplo: python main.py embed --reset
     parser_embed = subparsers.add_parser("embed", help="Create Vector Database (ChromaDB)")
     parser_embed.add_argument("--reset", action="store_true", help="Delete existing DB and rebuild from scratch")
+    
+    # --- COMANDO: LOAD-GRAPH ---
+    parser_load = subparsers.add_parser("load-graph", help="Load processed data into Neo4j Database")
 
     args = parser.parse_args()
 
@@ -119,6 +123,24 @@ def main():
             logger.info("✅ Vector DB Ready! You can now query the RAG system.")
         except Exception as e:
             logger.error(f"❌ Failed to build Vector DB: {e}")
+            
+    # ==========================================
+    # 3. CARGA A NEO4J (GRAFO)
+    # ==========================================
+    elif args.command == "load-graph":
+        logger.info("🚀 Starting Neo4j Ingestion Pipeline...")
+        
+        # Verificación rápida
+        if not os.path.exists(os.path.join(PROCESSED_DIR, "nodes.jsonl")) and not os.path.exists(os.path.join(PROCESSED_DIR, "nodes_validated.jsonl")):
+             logger.error("❌ No processed data found. Run 'build' first.")
+             return
+
+        try:
+            loader = Neo4jLoader(data_dir=PROCESSED_DIR)
+            loader.run()
+        except Exception as e:
+            logger.error(f"Failed to load Neo4j: {e}")
+            logger.warning("💡 Tip: Ensure Docker container is running: 'docker-compose up -d'")
 
 if __name__ == "__main__":
     main()
