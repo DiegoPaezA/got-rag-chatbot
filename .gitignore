@@ -13,3 +13,4 @@ wheels/
 
 data/raw/*
 data/processed/*
+data/chromadb/*
