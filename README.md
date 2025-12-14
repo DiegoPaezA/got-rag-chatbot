@@ -83,6 +83,7 @@ got-rag-chatbot/
 ### Prerequisites
 
 - Python 3.8+
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
 - Google Gemini API Key (for LLM validation feature)
 
 ### Installation
@@ -94,20 +95,20 @@ git clone https://github.com/DiegoPaezA/got-rag-chatbot.git
 cd got-rag-chatbot
 ```
 
-2. **Create and activate virtual environment**
+2. **Install dependencies**
+
+#### Using `uv` (Recommended)
 
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Install dependencies and create virtual environment
+uv sync
+
+# Activate the virtual environment
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
-3. **Install dependencies**
+1. **Set up environment variables**
 
-```bash
-pip install -r requirements.txt
-```
-
-4. **Set up environment variables**
 Create a `.env` file in the project root:
 
 ```env
