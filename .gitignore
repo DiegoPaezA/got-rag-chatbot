@@ -14,3 +14,4 @@ wheels/
 data/raw/*
 data/processed/*
 data/chromadb/*
+data/neo4j_data/*
