@@ -5,7 +5,6 @@ from neo4j import GraphDatabase
 from tqdm import tqdm
 from dotenv import load_dotenv
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("Neo4jLoader")
 
 class Neo4jLoader:
@@ -31,9 +30,9 @@ class Neo4jLoader:
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
 
         # Prefer validated nodes; fall back to raw nodes if absent
-        self.nodes_path = os.path.join(data_dir, "nodes_validated.jsonl")
+        self.nodes_path = os.path.join(data_dir, "nodes_cleaned.jsonl")
         if not os.path.exists(self.nodes_path):
-            self.nodes_path = os.path.join(data_dir, "nodes.jsonl")
+            self.nodes_path = os.path.join(data_dir, "nodes_validated.jsonl")
 
         self.edges_path = os.path.join(data_dir, "edges.jsonl")
 
