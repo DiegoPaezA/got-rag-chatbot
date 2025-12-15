@@ -7,14 +7,34 @@ from src.utils.text import clean_value, normalize_infobox_value, SKIP_KEYS
 logger = logging.getLogger(__name__)
 
 class GraphBuilder:
-    def __init__(self, input_path: str, output_dir: str):
+    """Extract nodes and documents from raw wiki JSON dump.
+    
+    Performs heuristic classification of entities into types based on infobox fields
+    and content analysis.
+    """
+    
+    def __init__(self, input_path: str, output_dir: str) -> None:
+        """Initialize builder with input and output paths.
+        
+        Args:
+            input_path: Path to wiki dump JSONL file.
+            output_dir: Output directory for nodes and documents files.
+        """
         self.input_path = input_path
         self.output_dir = output_dir
         self.nodes_file = os.path.join(output_dir, "nodes.jsonl")
         self.docs_file = os.path.join(output_dir, "documents.jsonl")
 
-    def build(self):
-        """Ejecuta la extracción heurística de nodos y documentos."""
+    def build(self) -> None:
+        """Extract heuristic nodes and documents from wiki dump.
+        
+        Process flow:
+        1. Type classification based on infobox fields and content
+        2. Property cleaning and normalization
+        3. Node creation with type scores for validation
+        4. Document creation for RAG retrieval
+        5. Save to nodes.jsonl and documents.jsonl
+        """
         if not os.path.exists(self.input_path):
             logger.error(f"Input file not found: {self.input_path}")
             return
@@ -40,13 +60,13 @@ class GraphBuilder:
                 infobox = data.get("infobox") or {}
                 content = data.get("content") or ""
 
-                # 1. CLASIFICACIÓN AVANZADA (Tu lógica original portada aquí)
+                # Advanced type classification (heuristic scoring)
                 e_type, conf, reason, scores = self._resolve_type(entity_id, infobox, content)
 
-                # Estadísticas
+                # Update statistics
                 stats["types"][e_type] = stats["types"].get(e_type, 0) + 1
 
-                # 2. LIMPIEZA DE PROPIEDADES
+                # Clean infobox properties
                 clean_props = {}
                 for k, v in infobox.items():
                     if k is None: continue
@@ -56,19 +76,19 @@ class GraphBuilder:
                     if v_clean:
                         clean_props[k] = v_clean
 
-                # 3. CREAR NODO
-                # Guardamos 'properties' crudas para que EdgeBuilder las use después
+                # Create node with cleaned properties
+                # Store 'properties' for later EdgeBuilder processing
                 nodes.append({
                     "id": entity_id,
                     "type": e_type,
                     "confidence": conf,
                     "reason": reason,
-                    "type_scores": scores, # Vital para el Validador
+                    "type_scores": scores,  # Critical for validator
                     "properties": clean_props,
                     "url": data.get("url", "")
                 })
                 
-                # 4. CREAR DOCUMENTO (RAG)
+                # Create document for RAG retrieval
                 if len(content) > 50:
                     documents.append({
                         "id": entity_id,
@@ -88,16 +108,31 @@ class GraphBuilder:
         logger.info(f"✅ Heuristic Build Done. Processed: {stats['processed']}")
         logger.info(f"   Distribution: {json.dumps(stats['types'], indent=2)}")
 
-    def _save_jsonl(self, data, path):
+    def _save_jsonl(self, data: list, path: str) -> None:
+        """Write data to JSONL file.
+        
+        Args:
+            data: List of dictionaries to serialize.
+            path: Output file path.
+        """
         with open(path, "w", encoding="utf-8") as f:
             for item in data:
                 f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
-    # =====================================================
-    # TU LÓGICA DE SCORING ORIGINAL (ENCAPSULADA)
-    # =====================================================
+    # =========================================================================
+    # Type Scoring Logic (Entity Classification)
+    # =========================================================================
 
     def _get_type_scores(self, title: str, infobox: dict) -> Dict[str, int]:
+        """Calculate type scores based on infobox fields and title.
+        
+        Args:
+            title: Entity title.
+            infobox: Infobox properties dictionary.
+            
+        Returns:
+            Dictionary mapping entity types to confidence scores.
+        """
         scores = {
             "Character": 0, "House": 0, "Organization": 0, "Battle": 0,
             "Location": 0, "Object": 0, "Creature": 0, "Religion": 0, "Episode": 0
@@ -176,7 +211,16 @@ class GraphBuilder:
         return scores
 
     def _analyze_text_content(self, content: str) -> Optional[str]:
-        """Fallback: mira el comienzo del texto para inferir el tipo."""
+        """Fallback type inference from text content.
+        
+        Looks at the first 300 chars of content for type keywords.
+        
+        Args:
+            content: Text content to analyze.
+            
+        Returns:
+            Inferred entity type, or None if no match found.
+        """
         if not content: return None
         intro = content[:300].lower()
         patterns = [
@@ -192,26 +236,41 @@ class GraphBuilder:
         return None
 
     def _resolve_type(self, title: str, infobox: dict, content: str) -> Tuple[str, str, str, dict]:
-        """Toma decisiones basadas en Scores + Texto."""
+        """Resolve entity type using scores and content analysis.
+        
+        Decision logic:
+        - Score >= 8: High confidence type classification
+        - Score 4-7: Medium confidence, type is likely correct
+        - Score 1-3: Low confidence, try text analysis for confirmation
+        - Score <= 0: No signals, classify as generic Lore entity
+        
+        Args:
+            title: Entity title.
+            infobox: Infobox properties.
+            content: Text content.
+            
+        Returns:
+            Tuple of (entity_type, confidence, reason, scores_dict)
+        """
         scores = self._get_type_scores(title, infobox)
         best_type, max_score = max(scores.items(), key=lambda x: x[1])
 
-        # Caso 1: Sin señales
+        # No signals in any field
         if max_score <= 0:
             text_guess = self._analyze_text_content(content)
             if text_guess:
                 return text_guess, "Low", "Only inferred from text content", scores
             return "Lore", "Low", "No signals in scores or text", scores
 
-        # Caso 2: Señales fuertes
+        # Strong signals
         if max_score >= 8:
             return best_type, "High", f"Score: {max_score}", scores
 
-        # Caso 3: Señales moderadas
+        # Moderate signals
         if max_score >= 4:
             return best_type, "Medium", f"Score: {max_score}", scores
 
-        # Caso 4: Señales débiles (1-3) -> Mirar texto
+        # Weak signals (1-3): try text analysis
         text_guess = self._analyze_text_content(content)
         if text_guess and text_guess != best_type:
             return best_type, "Low", f"Score: {max_score}, text suggests {text_guess}", scores
