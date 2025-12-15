@@ -19,7 +19,7 @@ from src.rag.vector_store import VectorDBBuilder
 
 from src.eval.dataset_generator import StratifiedDatasetGenerator
 from src.eval.inference import run_inference
-from src.eval.judge import run_batch_evaluation
+from src.eval.judge import LLMJudge
 
 # Initialize centralized logging system
 setup_logging()
@@ -173,7 +173,11 @@ def main():
         if args.step in ["judge", "all"]:
             logger.info("--- [EVAL 3/3] Running LLM Judge (Batch API) ---")
             try:
-                run_batch_evaluation()
+                judge = LLMJudge()
+                judge.evaluate(
+                    predictions_path="data/eval/predictions.jsonl",
+                    results_path="data/eval/evaluation_results.jsonl"
+                )
             except Exception as e:
                 logger.error(f"❌ Judge execution failed: {e}")
                 return
