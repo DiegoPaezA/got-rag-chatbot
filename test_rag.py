@@ -1,13 +1,10 @@
 """CLI entrypoint to test hybrid retrieval and generation."""
 import logging
+from src.utils.logger import setup_logging
 from src.rag.retriever import HybridRetriever
 from src.rag.generator import RAGGenerator
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S"
-)
+setup_logging()
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
