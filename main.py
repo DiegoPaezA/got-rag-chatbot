@@ -25,11 +25,11 @@ from src.eval.judge import run_batch_evaluation
 setup_logging()
 
 # Silence external library noise
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("google.generativeai").setLevel(logging.WARNING)
-logging.getLogger("grpc").setLevel(logging.WARNING)
-logging.getLogger("chromadb").setLevel(logging.ERROR)
+# logging.getLogger("httpx").setLevel(logging.WARNING)
+# logging.getLogger("httpcore").setLevel(logging.WARNING)
+# logging.getLogger("google.generativeai").setLevel(logging.WARNING)
+# logging.getLogger("grpc").setLevel(logging.WARNING)
+# logging.getLogger("chromadb").setLevel(logging.ERROR)
 
 logger = logging.getLogger("Orchestrator")
 
@@ -44,6 +44,7 @@ def main():
     
     # --- COMANDO: BUILD ---
     parser_build = subparsers.add_parser("build", help="Build the Knowledge Graph")
+    parser_build.add_argument("use_heuristic", type=bool, help="Use heuristic extraction")
     parser_build.add_argument("--use-llm", action="store_true", help="Enable Gemini validation")
     parser_build.add_argument("--clean-llm", action="store_true", help="Enable Gemini cleaning")
     
@@ -82,9 +83,12 @@ def main():
         logger.info("🏗️  Starting Graph Construction Pipeline...")
         
         # Step 1: Extraction
-        logger.info("--- [STEP 1/3] Node Extraction (Heuristic) ---")
-        builder = GraphBuilder(input_path=RAW_DATA_PATH, output_dir=PROCESSED_DIR)
-        builder.build()
+        if args.use_heuristic:
+            logger.info("--- [STEP 1/3] Node Extraction (Heuristic) ---")
+            builder = GraphBuilder(input_path=RAW_DATA_PATH, output_dir=PROCESSED_DIR)
+            builder.build()
+        else:
+            logger.info("--- [STEP 1/3] Skipping Heuristic Extraction ---")
         
         # Step 2: Validation
         if args.use_llm:
