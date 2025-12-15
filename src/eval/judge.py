@@ -1,147 +1,165 @@
-import os
 import json
-import time
-import google.generativeai as genai
+import os
+import logging
+from tqdm import tqdm
 from dotenv import load_dotenv
+from typing import List
+
+# LangChain Imports (Consistencia con el resto del proyecto)
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+from pydantic import BaseModel, Field
+
+# Configuración de Logs
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Silenciar ruido
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("google.generativeai").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-# Prompt del Juez
-JUDGE_PROMPT = """You are an impartial judge evaluating a chatbot's answers about Game of Thrones.
-You will be given a QUESTION, a GROUND TRUTH (correct answer), and a PREDICTION (chatbot answer).
+# --- MODELO DE SALIDA (PYDANTIC) ---
+class JudgeResult(BaseModel):
+    score: int = Field(description="1 if the prediction is semantically correct, 0 otherwise.")
+    reason: str = Field(description="A short explanation comparing the prediction to the ground truth.")
 
-Your task is to determine if the PREDICTION contains the semantic meaning of the GROUND TRUTH.
-- Be lenient with phrasing (e.g., "Jon Snow" == "Jon").
-- Be strict with facts (e.g., "Ned Stark" != "Robb Stark").
-- If the prediction says "I don't know" or retrieves wrong info, Score is 0.
+class LLMJudge:
+    def __init__(self, model_name: str = "gemini-2.5-flash"):
+        if not os.getenv("GOOGLE_API_KEY"):
+            raise ValueError("❌ GOOGLE_API_KEY no encontrada en .env")
 
-Return ONLY a JSON object:
-{"score": 1 if correct else 0, "reason": "short explanation"}
-"""
+        # Usamos temperature=0 para que sea un juez estricto y determinista
+        self.llm = ChatGoogleGenerativeAI(
+            model=model_name,
+            temperature=0, 
+            google_api_key=os.getenv("GOOGLE_API_KEY"),
+            max_retries=3
+        )
+        self.chain = self._create_chain()
 
-def prepare_batch_file(predictions_path, batch_input_path):
-    """Convierte predicciones al formato JSONL que exige la Batch API de Gemini."""
-    batch_requests = []
-    
-    with open(predictions_path, "r", encoding="utf-8") as f:
-        for line in f:
-            entry = json.loads(line)
-            
-            # Construir el prompt para este caso específico
-            user_content = f"""
-            QUESTION: {entry['question']}
-            GROUND TRUTH: {entry['ground_truth']}
-            PREDICTION: {entry['prediction']}
-            """
-            
-            # Formato específico de Batch request
-            request = {
-                "custom_id": entry['custom_id'],
-                "method": "generateContent",
-                "params": {
-                    "model": "models/gemini-1.5-flash", # Modelo barato y rápido
-                    "content": {
-                        "role": "user",
-                        "parts": [{"text": JUDGE_PROMPT + "\n\n" + user_content}]
-                    },
-                    "generationConfig": {
-                        "responseMimeType": "application/json"
-                    }
+    def _create_chain(self):
+        system_prompt = """
+        You are an impartial judge evaluating a chatbot's answers about Game of Thrones.
+        
+        INPUT DATA:
+        1. QUESTION: The user's query.
+        2. GROUND TRUTH: The correct fact.
+        3. PREDICTION: The chatbot's response.
+
+        TASK:
+        Determine if the PREDICTION contains the semantic meaning of the GROUND TRUTH.
+        
+        RULES:
+        - Be lenient with phrasing (e.g., "Jon Snow" == "Jon").
+        - Be strict with facts (e.g., "Ned Stark" != "Robb Stark").
+        - If the prediction says "I don't know" or retrieves wrong info, Score is 0.
+        - If the prediction adds extra correct info, Score is 1.
+        
+        Return a JSON with 'score' (1 or 0) and 'reason'.
+        """
+
+        human_prompt = """
+        QUESTION: {question}
+        GROUND TRUTH: {ground_truth}
+        PREDICTION: {prediction}
+        """
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("human", human_prompt)
+        ])
+        
+        parser = JsonOutputParser(pydantic_object=JudgeResult)
+        
+        return prompt | self.llm | parser
+
+    def evaluate(self, predictions_path: str, results_path: str):
+        if not os.path.exists(predictions_path):
+            logger.error(f"❌ No se encontró {predictions_path}")
+            return
+
+        # 1. Cargar Predicciones
+        entries = []
+        with open(predictions_path, "r", encoding="utf-8") as f:
+            for line in f:
+                entries.append(json.loads(line))
+
+        logger.info(f"👨‍⚖️ Iniciando evaluación de {len(entries)} respuestas con LangChain...")
+
+        results = []
+        total_score = 0
+        valid_items = 0
+
+        # 2. Bucle de Evaluación
+        for entry in tqdm(entries, desc="Evaluando"):
+            try:
+                # Invocación directa a LangChain
+                response = self.chain.invoke({
+                    "question": entry.get("question"),
+                    "ground_truth": entry.get("ground_truth"),
+                    "prediction": entry.get("prediction")
+                })
+                
+                # Armar resultado
+                final_record = {
+                    "id": entry.get("custom_id"),
+                    "question": entry.get("question"),
+                    "prediction": entry.get("prediction"),
+                    "ground_truth": entry.get("ground_truth"),
+                    "score": response.get("score", 0),
+                    "reason": response.get("reason", "N/A"),
+                    "type": entry.get("type", "Unknown"),           # Analytics
+                    "evidence_source": entry.get("evidence_source") # Analytics
                 }
-            }
-            batch_requests.append(request)
+                
+                results.append(final_record)
+                total_score += final_record["score"]
+                valid_items += 1
 
-    with open(batch_input_path, "w", encoding="utf-8") as f:
-        for req in batch_requests:
-            f.write(json.dumps(req) + "\n")
-    
-    return len(batch_requests)
+            except Exception as e:
+                logger.error(f"❌ Error evaluando ID {entry.get('custom_id')}: {e}")
+                continue
+
+        # 3. Guardar Resultados
+        os.makedirs(os.path.dirname(results_path), exist_ok=True)
+        with open(results_path, "w", encoding="utf-8") as f:
+            for res in results:
+                f.write(json.dumps(res, ensure_ascii=False) + "\n")
+
+        # 4. Reporte Final
+        accuracy = (total_score / valid_items) * 100 if valid_items > 0 else 0
+        logger.info(f"\n📊 RESULTADOS FINALES ({valid_items} items evaluados):")
+        logger.info(f"🎯 Precisión Global (Accuracy): {accuracy:.2f}%")
+        logger.info(f"💾 Resultados detallados en: {results_path}")
+        
+        # Analytics por Fuente (Graph vs Text)
+        self._print_analytics(results)
+
+    def _print_analytics(self, results):
+        """Imprime desglose de precisión por tipo de fuente."""
+        from collections import defaultdict
+        
+        by_source = defaultdict(list)
+        for r in results:
+            src = r.get("evidence_source", "Unknown")
+            by_source[src].append(r["score"])
+            
+        print("\n📈 Desglose por Fuente:")
+        for source, scores in by_source.items():
+            avg = (sum(scores) / len(scores)) * 100 if scores else 0
+            print(f"   - {source}: {avg:.2f}% ({len(scores)} preguntas)")
 
 def run_batch_evaluation():
-    pred_path = "data/eval/predictions.jsonl"
-    batch_jsonl = "data/eval/batch_requests.jsonl"
-    results_path = "data/eval/evaluation_results.jsonl"
-
-    if not os.path.exists(pred_path):
-        print("❌ No hay predicciones. Ejecuta paso 2.")
-        return
-
-    # 1. Preparar archivo
-    count = prepare_batch_file(pred_path, batch_jsonl)
-    print(f"📦 Preparado lote de {count} solicitudes.")
-
-    # 2. Subir archivo a Gemini File API
-    batch_file = genai.upload_file(batch_jsonl)
-    print(f"☁️ Archivo subido: {batch_file.name}")
-
-    # 3. Crear el Job
-    print("🚀 Enviando Batch Job a Google...")
-    batch_job = genai.create_batch_job(
-        display_name="got_chatbot_eval_01",
-        model="models/gemini-1.5-flash",
-        source=batch_file.name,
-        dest_format="jsonl"
+    # Mantenemos el nombre de la función para compatibilidad con main.py
+    judge = LLMJudge()
+    judge.evaluate(
+        predictions_path="data/eval/predictions.jsonl",
+        results_path="data/eval/evaluation_results.jsonl"
     )
-    
-    print(f"Job creado: {batch_job.name}. Estado: {batch_job.state}")
-    print("⏳ Esperando completitud (esto puede tomar varios minutos)...")
-
-    # 4. Polling (esperar resultado)
-    while batch_job.state.name == "ACTIVE" or batch_job.state.name == "PROCESSING":
-        time.sleep(30) # Revisar cada 30 segundos
-        batch_job = genai.get_batch_job(batch_job.name)
-        print(f"Estado actual: {batch_job.state.name}...")
-
-    if batch_job.state.name == "FAILED":
-        print(f"❌ El Batch Job falló: {batch_job.error}")
-        return
-
-    # 5. Descargar resultados
-    print("✅ Job completado. Descargando resultados...")
-    output_file_name = batch_job.output_file
-    # El SDK no descarga directo, leemos el contenido
-    # Nota: A veces tarda un poco en estar disponible para lectura
-    
-    # Una forma robusta es listar los archivos o re-obtener referencia
-    # Para simplificar en este script de ejemplo:
-    content = genai.get_file(output_file_name).download() # Depende de la versión del SDK
-    # Si la versión de SDK es antigua, puede requerir requests normal. 
-    # Asumimos google-generativeai actualizado.
-    
-    # Parsear y Guardar
-    # El contenido viene en bytes, decodificamos
-    decoded_content = content.decode('utf-8')
-    
-    total_score = 0
-    total_items = 0
-    
-    with open(results_path, "w", encoding="utf-8") as f:
-        for line in decoded_content.strip().split('\n'):
-            res = json.loads(line)
-            # Extraer la respuesta del modelo
-            try:
-                model_output = res['response']['candidates'][0]['content']['parts'][0]['text']
-                evaluation = json.loads(model_output)
-                
-                # Unir con el ID original para saber cual pregunta fue
-                custom_id = res['custom_id']
-                
-                final_record = {
-                    "id": custom_id,
-                    "score": evaluation.get("score", 0),
-                    "reason": evaluation.get("reason", "N/A")
-                }
-                f.write(json.dumps(final_record) + "\n")
-                
-                total_score += final_record['score']
-                total_items += 1
-            except Exception as e:
-                print(f"Error parseando linea de resultado: {e}")
-
-    print(f"\n📊 RESULTADOS FINALES ({total_items} items):")
-    print(f"🎯 Precisión (Accuracy): {total_score / total_items:.2%}")
-    print(f"💾 Detalle guardado en: {results_path}")
 
 if __name__ == "__main__":
     run_batch_evaluation()
