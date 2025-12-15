@@ -8,11 +8,11 @@ from typing import List, Dict
 # Add repository root to sys.path so we can import sibling modules under `src`
 sys.path.append(os.path.join(os.path.dirname(__file__), "../.."))
 
+from src.utils.logger import setup_logging
 from src.graph.validator import GraphValidator
 from src.graph.edge_builder import EdgeBuilder
 
-# Logging configuration for this tool
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+setup_logging()
 logger = logging.getLogger("TypeFixer")
 
 class TypeFixer(GraphValidator):

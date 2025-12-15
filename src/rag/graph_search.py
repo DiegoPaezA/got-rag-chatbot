@@ -9,8 +9,6 @@ from langchain_core.prompts import PromptTemplate
 from neo4j import GraphDatabase
 from neo4j.graph import Node, Relationship
 
-# Logging setup
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("GraphSearch")
 
 class GraphSearcher:
@@ -129,10 +127,16 @@ class GraphSearcher:
             
             Relationship types:
             (:Character)-[:CHILD_OF]->(:Character)
-            (:Character)-[:KILLED]->(:Character)
+            (:Character)-[:PARENT_OF]->(:Character)
             (:Character)-[:BELONGS_TO]->(:House)
-            (:Character)-[:OWNS_WEAPON]->(:Object)
+            (:House)-[:OWNS_WEAPON]->(:Object)
+            (:Character)-[:MARRIED_TO]->(:Character)
+            (:Character)-[:SIBLING_OF]->(:Character)
+            (:Character)-[:FOLLOWS_RELIGION]->(:Religion)
+            (:Character)-[:APPEARED_IN_SEASON]->(:Episode)
+            (:House)-[:VASSAL_OF]->(:House)
             (:House)-[:LOCATED_IN]->(:Location)
+
             """
 
     def generate_cypher(self, question: str) -> str:

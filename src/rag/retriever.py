@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 # Graph searcher for Neo4j-backed retrieval
 from src.rag.graph_search import GraphSearcher
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("HybridRetriever")
 
 class HybridRetriever:

@@ -13,21 +13,40 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-# --- OUTPUT SCHEMAS FOR STRUCTURED LLM RESPONSES ---
+
+# =============================================================================
+# Pydantic Output Schemas for Structured LLM Responses
+# =============================================================================
+
 class NodeValidation(BaseModel):
+    """Validation result for a single node."""
     id: str = Field(description="The exact ID of the analyzed node.")
     suggested_type: str = Field(description="The correct type.")
     confidence: str = Field(description="'High', 'Medium', or 'Low'.")
     rationale: str = Field(description="Brief reason.")
 
+
 class BatchValidationResult(BaseModel):
+    """LLM response for a batch of nodes."""
     results: List[NodeValidation]
 
 class GraphValidator:
-    def __init__(self, data_dir: str, config_path: str = "cfg/config.json"):
+    """Validate node types using LLM against knowledge base documents.
+    
+    Processes nodes in batches, validates them against document context,
+    and produces nodes_validated.jsonl with corrected types.
+    """
+    
+    def __init__(self, data_dir: str, config_path: str = "cfg/config.json") -> None:
+        """Initialize validator with paths and configuration.
+        
+        Args:
+            data_dir: Directory containing node and document files.
+            config_path: Path to configuration file.
+        """
         self.data_dir = data_dir
         
-        # File paths
+        # Input and output file paths
         self.nodes_path = os.path.join(data_dir, "nodes.jsonl")
         self.docs_path = os.path.join(data_dir, "documents.jsonl")
         self.checkpoint_path = os.path.join(data_dir, "nodes_llm_checkpoint.jsonl")
@@ -49,17 +68,25 @@ class GraphValidator:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    def validate(self):
-        """Main validation method called from main.py"""
+    def validate(self) -> None:
+        """Main validation entrypoint: validate node types against knowledge base.
+        
+        Process flow:
+        1. Initialize LLM model and prompts from config
+        2. Load all nodes and document context
+        3. Filter candidates needing validation
+        4. Process batches through LLM with retry logic
+        5. Consolidate results into validated output file
+        """
         load_dotenv()
         if not os.getenv("GOOGLE_API_KEY"):
             logger.error("❌ GOOGLE_API_KEY missing.")
             return
 
         model_name = self.llm_settings.get("model_name", "gemini-2.5-flash")
-        logger.info(f"🤖 Init LLM Validation ({model_name})")
+        logger.info(f"🤖 Initializing LLM validation ({model_name})")
 
-        # 1. Setup LLM & Prompt (Using JSON config)
+        # Setup LLM and prompt templates from configuration
         llm = ChatGoogleGenerativeAI(
             model=model_name,
             temperature=self.llm_settings.get("temperature", 0.0),
@@ -73,11 +100,11 @@ class GraphValidator:
             ("system", system_tmpl), ("human", human_tmpl)
         ]) | llm
 
-        # 2. Load Data
+        # Load nodes and track progress
         all_nodes = self._load_jsonl(self.nodes_path)
         processed_ids = self._load_checkpoint_ids()
 
-        # 3. Filter Candidates
+        # Filter nodes needing validation
         candidates = []
         for node in all_nodes:
             if node['id'] in processed_ids: continue
@@ -90,11 +117,11 @@ class GraphValidator:
             self._consolidate_results(all_nodes)
             return
 
-        # 4. Load Contexts (Real text)
+        # Load document contexts for candidates
         candidate_ids_set = {n['id'] for n in candidates}
         contexts_map = self._load_candidate_contexts(candidate_ids_set)
 
-        # 5. Loop de Batches
+        # Process batches through LLM
         with open(self.checkpoint_path, "a", encoding="utf-8") as f_cp:
             process_iterator = tqdm(
                 range(0, len(candidates), self.batch_size), 
@@ -210,9 +237,19 @@ class GraphValidator:
                 except: continue
         return contexts
 
-    # --- LOADING AND SAVING UTILITIES ---
-    def _load_jsonl(self, path):
-        """Load a JSONL file and return list of parsed objects."""
+    # =========================================================================
+    # File I/O Utilities
+    # =========================================================================
+    
+    def _load_jsonl(self, path: str) -> List[Dict[str, Any]]:
+        """Load all objects from JSONL file.
+        
+        Args:
+            path: Path to JSONL file.
+            
+        Returns:
+            List of parsed objects. Invalid lines are skipped.
+        """
         data = []
         if os.path.exists(path):
             with open(path, 'r', encoding="utf-8") as f:
