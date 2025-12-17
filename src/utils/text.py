@@ -1,34 +1,31 @@
 import re
 
-# Patrones extraídos de tu archivo kg.py
+# Patterns extracted from the kg.py file
 SPLIT_PATTERN = r',|;|/|\n|<br\s*/?>|(?<=[a-z])(?=[A-Z])'
 
-# Claves a ignorar en limpieza de propiedades
+# Keys to skip while cleaning properties
 SKIP_KEYS = {
     '1', '2', '3', '4', '5', '6', '7', '8', '9', '10',
     'image', 'yes', 'no', 'caption', 'alt'
 }
 
 def clean_value(val: str) -> str:
-    """
-    Limpia un valor de texto proveniente del infobox o del título.
-    Elimina wiki-markup ([[...]]), llaves y comillas.
-    """
+    """Clean a text value from an infobox or title by removing wiki markup, braces, and quotes."""
     if not val:
         return ""
     val = str(val)
-    # Eliminar llaves anidadas dobles {{...}} y simples {...}
+    # Remove nested double braces {{...}} and single braces {...}
     val = re.sub(r'\{+(.*?)\}+', r'\1', val)
-    # Eliminar enlaces wiki [[Link|Text]] -> Text
+    # Remove wiki links [[Link|Text]] -> Text
     val = re.sub(r'\[\[(?:[^|\]]*\|)?([^\]]+)\]\]', r'\1', val)
-    # Eliminar referencias tipo [1], [note 1]
+    # Remove reference markers like [1] or [note 1]
     val = re.sub(r'\[.*?\]', '', val)
     # Limpieza de caracteres
     val = val.replace("'", "").replace('"', '').strip()
     return val
 
 def normalize_infobox_value(v) -> str:
-    """Convierte listas o nulos a string plano."""
+    """Convert lists or nulls to a flat string."""
     if v is None:
         return ""
     if isinstance(v, list):
