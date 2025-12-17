@@ -44,7 +44,7 @@ def main():
     
     # --- COMANDO: BUILD ---
     parser_build = subparsers.add_parser("build", help="Build the Knowledge Graph")
-    parser_build.add_argument("use_heuristic", type=bool, help="Use heuristic extraction")
+    parser_build.add_argument("--use-heuristic", action="store_true", help="Use heuristic extraction")
     parser_build.add_argument("--use-llm", action="store_true", help="Enable Gemini validation")
     parser_build.add_argument("--clean-llm", action="store_true", help="Enable Gemini cleaning")
     
