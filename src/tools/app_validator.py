@@ -5,25 +5,25 @@ import pandas as pd
 import random
 from datetime import datetime
 
-# --- CONFIGURACIÓN ---
+# --- CONFIGURATION ---
 DATA_DIR = "data/processed"
-NODES_PATH = os.path.join(DATA_DIR, "nodes_validated.jsonl") # O nodes.jsonl si no usaste LLM aún
+NODES_PATH = os.path.join(DATA_DIR, "nodes_validated.jsonl")  # Or nodes.jsonl if the LLM was not used yet
 GOLD_DIR = "data/gold"
 GOLD_FILE = os.path.join(GOLD_DIR, "gold_labels.jsonl")
 
-# Tipos permitidos (mismos que en tu config)
+# Allowed types (same as config)
 ALLOWED_TYPES = [
     "Character", "House", "Organization", "Battle",
     "Location", "Object", "Creature", "Religion", "Episode", "Lore"
 ]
 
-# Configuración de página
+# Page settings
 st.set_page_config(page_title="GoT Graph Validator", layout="wide")
 
 # --- FUNCIONES ---
 
 def load_data():
-    """Carga nodos y prepara/recupera la muestra estratificada."""
+    """Load nodes and prepare or recover the stratified sample."""
     if not os.path.exists(NODES_PATH):
         st.error(f"❌ No se encontró {NODES_PATH}")
         return []
@@ -38,12 +38,8 @@ def load_data():
     return df
 
 def get_stratified_sample(df, n=200):
-    """
-    Selecciona n ejemplos intentando balancear las clases.
-    Si simplemente hacemos random, tendremos 190 Characters y 0 Creatures.
-    """
-    # Si ya tenemos un archivo de sesión con la muestra seleccionada, lo usamos
-    # para no cambiar los nodos cada vez que recargamos la página.
+    """Select n examples while balancing classes instead of pure random sampling."""
+    # Reuse an existing session sample to keep nodes stable between reloads
     sample_file = os.path.join(GOLD_DIR, "validation_queue.csv")
     
     if os.path.exists(sample_file):
@@ -51,41 +47,41 @@ def get_stratified_sample(df, n=200):
     
     st.toast("Generando nueva muestra estratificada...")
     
-    # Estrategia: Tomar muestras equitativas por tipo
+    # Strategy: take even samples per type
     types = df['type'].unique()
     samples_per_type = n // len(types)
     
     sampled_dfs = []
     for t in types:
-        # Tomar X de cada tipo, o todos si hay pocos
+        # Take X from each type, or all if the group is small
         subset = df[df['type'] == t]
         n_subset = min(len(subset), samples_per_type)
         if n_subset > 0:
             sampled_dfs.append(subset.sample(n=n_subset, random_state=42))
     
-    # Concatenar
+    # Concatenate
     sample = pd.concat(sampled_dfs)
     
-    # Si faltan para llegar a n, rellenar aleatoriamente del resto
+    # If still short of n, fill randomly from the remainder
     remaining = n - len(sample)
     if remaining > 0:
         rest = df[~df['id'].isin(sample['id'])]
         if len(rest) > 0:
             sample = pd.concat([sample, rest.sample(n=min(len(rest), remaining), random_state=42)])
     
-    # Mezclar y guardar para persistencia
+    # Shuffle and persist
     sample = sample.sample(frac=1).reset_index(drop=True)
     
     if not os.path.exists(GOLD_DIR):
         os.makedirs(GOLD_DIR)
     
-    # Guardamos solo IDs y datos clave para la cola
+    # Save only IDs and key data for the queue
     sample[['id', 'type', 'url', 'properties']].to_csv(sample_file, index=False)
     
     return sample
 
 def load_existing_gold():
-    """Carga lo que ya has validado para no repetir."""
+    """Load validated items to avoid repetition."""
     if not os.path.exists(GOLD_FILE):
         return {}
     
@@ -99,7 +95,7 @@ def load_existing_gold():
     return gold_map
 
 def save_gold_label(node_id, gold_type, comments=""):
-    """Guarda una validación en el archivo JSONL (Append mode)."""
+    """Persist a gold label to the JSONL file (append mode)."""
     record = {
         "id": node_id, 
         "gold_type": gold_type, 
@@ -107,7 +103,7 @@ def save_gold_label(node_id, gold_type, comments=""):
         "comments": comments
     }
     
-    # Escribir al archivo (append)
+    # Append to the file
     with open(GOLD_FILE, 'a', encoding='utf-8') as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
