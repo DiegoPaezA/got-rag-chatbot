@@ -4,6 +4,7 @@ import streamlit as st
 import os
 import sys
 import logging
+import json
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
@@ -12,14 +13,14 @@ sys.path.append(project_root)
 from src.rag.retriever import HybridRetriever
 from src.rag.generator import RAGGenerator
 
-# Page configuration
+# --- PAGE SETUP ---
 st.set_page_config(
     page_title="Maester AI - Game of Thrones",
     page_icon="🐉",
     layout="wide"
 )
 
-# Game of Thrones themed styling
+# --- CSS STYLES ---
 st.markdown("""
 <style>
     /* Main background */
@@ -28,13 +29,13 @@ st.markdown("""
         color: #d4af37;
     }
     
-    /* Overall text color */
+    /* Global text color */
     body {
         color: #c0c0c0;
         font-family: 'Georgia', serif;
     }
     
-    /* Titles */
+    /* Headings */
     h1, h2, h3 {
         color: #d4af37;
         font-family: 'Georgia', serif;
@@ -43,199 +44,150 @@ st.markdown("""
         padding-bottom: 10px;
     }
     
-    /* Chat messages - User */
+    /* User messages */
     .stChatMessage[data-testid="stChatMessageUser"] {
-        background: linear-gradient(135deg, #1a3a52 0%, #2c5282 100%);
-        border-left: 4px solid #d4af37;
-        border-radius: 8px;
-        padding: 15px 12px;
-        margin: 10px 0;
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);
+        background-color: #2c3e50;
+        border-radius: 15px;
+        border: 1px solid #8b7355;
     }
     
-    /* Chat messages - Assistant */
+    /* Assistant messages */
     .stChatMessage[data-testid="stChatMessageAssistant"] {
-        background: linear-gradient(135deg, #2d1b1b 0%, #4a2c2c 100%);
-        border-left: 4px solid #8b7355;
-        border-radius: 8px;
-        padding: 15px 12px;
-        margin: 10px 0;
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);
+        background-color: #1a1f3a;
+        border-radius: 15px;
+        border: 1px solid #d4af37;
     }
-    
-    /* Input box */
-    .stChatInput {
-        border: 2px solid #8b7355 !important;
-        border-radius: 8px;
-        background: #1a1f3a !important;
-        color: #c0c0c0 !important;
-        font-family: 'Georgia', serif;
-    }
-    
-    .stChatInput input {
-        color: #c0c0c0 !important;
-        background: #1a1f3a !important;
-    }
-    
-    /* Expander containers */
-    .streamlit-expanderHeader {
-        background: linear-gradient(90deg, #2d1b1b 0%, #3a2a2a 100%) !important;
-        border: 1px solid #8b7355 !important;
-        border-radius: 6px !important;
-        color: #d4af37 !important;
-        font-weight: bold;
-        padding: 10px;
-    }
-    
-    .streamlit-expanderContent {
-        background: #0a0e27 !important;
-        border: 1px solid #8b7355 !important;
-        border-top: none !important;
-        border-radius: 0 0 6px 6px !important;
-        padding: 15px;
-    }
-    
-    /* Subheaders */
-    .stSubheader {
-        color: #d4af37 !important;
-        font-size: 18px !important;
-        font-weight: bold !important;
-    }
-    
-    /* Buttons */
-    .stButton > button {
-        background: linear-gradient(135deg, #8b7355 0%, #a0826d 100%) !important;
-        color: #0a0e27 !important;
-        border: 2px solid #d4af37 !important;
-        border-radius: 6px !important;
-        font-weight: bold !important;
-        padding: 10px 20px !important;
-        transition: all 0.3s ease !important;
-    }
-    
-    .stButton > button:hover {
-        background: linear-gradient(135deg, #a0826d 0%, #8b7355 100%) !important;
-        box-shadow: 0 0 15px rgba(212, 175, 55, 0.5) !important;
-    }
-    
-    /* Spinner text */
-    .stSpinner {
-        color: #d4af37 !important;
-    }
-    
-    /* Error boxes */
-    .stAlert {
-        background: linear-gradient(135deg, #3a1a1a 0%, #4a2a2a 100%) !important;
-        border: 2px solid #d4af37 !important;
-        border-radius: 6px !important;
-        color: #ff6b6b !important;
-    }
-    
-    /* JSON display */
-    pre {
-        background: #0f1420 !important;
-        border: 1px solid #8b7355 !important;
-        border-radius: 6px !important;
-        color: #d4af37 !important;
-        padding: 12px !important;
-    }
-    
-    /* Divider lines */
-    hr {
-        border-color: #8b7355 !important;
-        opacity: 0.5;
+
+    /* Fragment cards */
+    .fragment-card {
+        background: #15192b; 
+        padding: 10px; 
+        margin: 8px 0; 
+        border-left: 3px solid #8b7355; 
+        border-radius: 4px;
+        font-size: 0.9em;
     }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🐉 The Maester's Archives")
-st.markdown("""
-<div style='text-align: center; padding: 15px; border: 2px solid #d4af37; border-radius: 8px; 
-            background: linear-gradient(135deg, #1a1f3a 0%, #2d1b1b 100%); margin-bottom: 20px;'>
-    <p style='color: #d4af37; font-size: 16px; font-style: italic;'>
-        "The Maester's knowledge spans the realm of Westeros and beyond..."
-    </p>
-    <p style='color: #c0c0c0;'>Ask about lineage, battles, and the history of the Seven Kingdoms.</p>
-</div>
-""", unsafe_allow_html=True)
-
-# Lazy load engine components
+# --- INITIALIZATION (SINGLETON) ---
 @st.cache_resource
-def load_engine():
-    """Load retriever and generator with caching."""
-    retriever = HybridRetriever()
-    generator = RAGGenerator()
-    return retriever, generator
+def get_engine():
+    return HybridRetriever(), RAGGenerator()
 
 try:
-    retriever, generator = load_engine()
+    retriever, generator = get_engine()
 except Exception as e:
-    st.error(f"❌ Error connecting to the archives: {e}")
+    st.error(f"Failed to initialize RAG engine: {e}")
     st.stop()
 
-# Initialize chat history
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display chat history
+# --- MEMORY FUNCTION ---
+def format_chat_history(messages: list, limit: int = 4) -> list:
+    """Convert Streamlit chat history to the retriever-friendly format."""
+    history = []
+    # Skip the latest message because it is the current prompt we just added
+    recent = messages[-limit:]
+    for msg in recent:
+        role = "Human" if msg["role"] == "user" else "AI"
+        history.append((role, msg["content"]))
+    return history
+
+# --- MAIN UI ---
+st.title("🐉 Maester AI: The Citadel Archives")
+st.markdown("*Ask questions about the history, lineage, and secrets of Westeros.*")
+
+# Render chat history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Handle user input
-if prompt := st.chat_input("Who is Jon Snow's mother?"):
+# Input
+if prompt := st.chat_input("What connects the Great Houses?"):
+    
+    # 1. Show user message
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    # 2. Process assistant response
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
-        full_response = ""
         
-        with st.spinner("Consulting the scrolls..."):
-            try:
-                context = retriever.retrieve(prompt)
+        try:
+            with st.spinner("Consulting the archives..."):
                 
-# Show retrieved context in expandable sections
-                with st.expander("🔍 What did the Maester find?", expanded=False):
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.subheader("🕸️ Graph Facts")
-                        graph_data = context.get("graph_context")
-                        if graph_data:
-                            st.json(graph_data)
-                        else:
-                            st.markdown("""
-                            <p style='color: #8b7355; font-style: italic;'>
-                            No direct relationships found in the Great Ledger...
-                            </p>
-                            """, unsafe_allow_html=True)
-                    
-                    with col2:
-                        st.subheader("📄 Scroll Fragments")
-                        vector_docs = context.get("vector_context")
-                        if vector_docs:
-                            for i, doc in enumerate(vector_docs, 1):
-                                st.markdown(f"""
-                                <div style='background: #1a1f3a; padding: 10px; margin: 8px 0; 
-                                           border-left: 3px solid #8b7355; border-radius: 4px;'>
-                                    <p style='color: #d4af37; font-weight: bold;'>Fragment {i}</p>
-                                    <p style='color: #c0c0c0; font-size: 13px;'>{doc[:300]}...</p>
-                                </div>
-                                """, unsafe_allow_html=True)
-                        else:
-                            st.markdown("""
-                            <p style='color: #8b7355; font-style: italic;'>
-                            No scrolls found in the Archives...
-                            </p>
-                            """, unsafe_allow_html=True)
+                # A) Prepare chat history for memory (excluding the current prompt)
+                history_tuples = format_chat_history(st.session_state.messages[:-1])
+                
+                # B) Retrieve with memory
+                context = retriever.retrieve(query=prompt, chat_history=history_tuples)
+                print(json.dumps(context, indent=2))  # Console debug
+                # C) Debug: show if the question was rewritten
+                if "refined_query" in context and context["refined_query"] != prompt:
+                    with st.expander("🧠 Maester's Thought Process (Query Refinement)"):
+                        st.caption(f"Original: {prompt}")
+                        st.markdown(f"**Searching for:** `{context['refined_query']}`")
 
+                # D) Source visualization: graph vs text
+                if context.get("vector_context") or context.get("graph_context"):
+                    with st.expander("📜 Ancient Scrolls & Lineages (Sources)", expanded=False):
+                        col1, col2 = st.columns(2)
+                        # --- COLUMN 1: GRAPH KNOWLEDGE ---
+                        with col1:
+                            st.subheader("🕸️ Graph Knowledge")
+                            st.caption("Structured data from Neo4j")
+                            
+                            g_data = context.get("graph_context", [])
+                            
+                            if g_data:
+                                for node in g_data:
+                                    with st.container():
+                                        # Visual header to separate each matched node
+                                        st.markdown("#### 🔹 Entity Match")
+                                        
+                                        # Iterate over every property returned for the node
+                                        for key, value in node.items():
+                                            # Cleanup: "c.name" -> "name"
+                                            clean_key = key.split(".")[-1] if "." in key else key
+                                            
+                                            # Render as list item
+                                            st.markdown(f"- **{clean_key}:** {value}")
+                                        
+                                        st.divider()
+                            else:
+                                st.info("No direct graph connections found.")
+
+                        # --- COLUMN 2: TEXT FRAGMENTS ---
+                        with col2:
+                            st.subheader("📄 Text Fragments")
+                            st.caption("Unstructured text from Vector DB")
+                            
+                            v_docs = context.get("vector_context", [])
+                            
+                            if v_docs:
+                                for i, doc in enumerate(v_docs[:4], 1):
+                                    st.markdown(f"""
+                                    <div class="fragment-card">
+                                        <div style='color: #d4af37; font-weight: bold; font-size: 0.8em; margin-bottom:5px;'>
+                                            📜 Fragment {i}
+                                        </div>
+                                        <div style='color: #e0e0e0; font-size: 0.85em; line-height: 1.4;'>
+                                            {doc[:400]}...
+                                        </div>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                            else:
+                                st.info("No text fragments found.")
+
+                # E) Generation
                 full_response = generator.generate_answer(prompt, context)
                 message_placeholder.markdown(full_response)
-                
-            except Exception as e:
-                full_response = f"The ravens are lost. Error: {e}"
-                message_placeholder.error(full_response)
+            
+        except Exception as e:
+            st.error(f"The ravens are lost. Error: {e}")
+            full_response = "I am unable to answer at this moment."
 
     st.session_state.messages.append({"role": "assistant", "content": full_response})
