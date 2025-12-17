@@ -3,7 +3,8 @@ import json
 import time
 import random
 import logging
-from typing import Dict, Any, List, Set
+import hashlib
+from typing import Dict, Any, List, Set, Optional
 
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -24,7 +25,7 @@ class SingleNodeCleaning(BaseModel):
     id: str = Field(description="The node id (exactly as in the graph).")
     normalized_relations: Dict[str, List[str]] = Field(
         default_factory=dict,
-        description="Map from property name (e.g. Father, House, AKA) to a list of cleaned entity names."
+        description="Map from property name (e.g. Father, House, AKA, Titles) to a list of cleaned entity names."
     )
 
 
@@ -40,12 +41,15 @@ class BatchCleaningResult(BaseModel):
 class GraphCleaner:
     """
     Use an LLM to normalize relationship-bearing properties in nodes_validated.jsonl,
-    producing a new file nodes_cleaned.jsonl with a `normalized_relations` field per node.
-
-    - Input:  nodes_validated.jsonl (fallback: nodes.jsonl)
-    - Output: nodes_cleaned.jsonl
-    - Checkpoint: nodes_cleaner_checkpoint.jsonl
+    producing nodes_cleaned.jsonl with a `normalized_relations` field per node.
     """
+
+    # Generic junk tokens that should never become entity targets
+    GENERIC_BAD = {
+        "unknown", "none", "n/a", "na", "?", "unnamed",
+        "sons", "son", "son(s)", "daughters", "daughter",
+        "children", "various", "numerous"
+    }
 
     def __init__(self, data_dir: str, config_path: str = "cfg/config.json"):
         self.data_dir = data_dir
@@ -59,7 +63,7 @@ class GraphCleaner:
         self.nodes_out_path = os.path.join(data_dir, "nodes_cleaned.jsonl")
         self.checkpoint_path = os.path.join(data_dir, "nodes_cleaner_checkpoint.jsonl")
 
-        self.batch_size = 10
+        self.batch_size = 15
         self.max_retries = 5
         self.base_delay = 4.0
 
@@ -67,14 +71,38 @@ class GraphCleaner:
         self.llm_settings = self.config.get("llm_settings", {})
         self.prompts = self.config.get("prompts", {})
 
-        # Properties to normalize (includes AKA)
+        # Properties to normalize
         self.target_keys: Set[str] = {
+            # Family / couple
             "Father", "Mother", "Children", "Issue", "Siblings",
             "Spouse", "Lovers",
-            "House", "Affiliation", "Allegiance", "Overlords", "Vassals",
-            "Owners", "Creator", "Weapon", "Ancestral Weapon",
-            "Culture", "Religion",
+
+            # Politics / loyalties
+            "House", "Affiliation", "Allegiance", "Overlords", "Vassals", 
+            "Titles", # <--- IMPORTANTE: Está aquí
+
+            # Succession
+            "Successor", "Predecessor", "Heir",
+
+            # Leadership
+            "Leader", "Head", "Rulers",
+
+            # Geography
+            "Region", "Seat",
+
+            # Production / episodes
+            "DeathEp", "Death",
+
+            # War
             "Combatants", "Commanders", "Conflict", "War",
+
+            # Objects
+            "Owners", "Creator", "Weapon", "Ancestral Weapon",
+
+            # “Problematic but useful to clean”
+            "Culture", "Arms", "Actor",
+
+            # AKA
             "AKA",
         }
 
@@ -85,14 +113,6 @@ class GraphCleaner:
     # =========================================================================
 
     def _load_config(self, path: str) -> Dict[str, Any]:
-        """Load JSON configuration file safely.
-        
-        Args:
-            path: Path to configuration file.
-            
-        Returns:
-            Configuration dictionary, or empty dict if file not found or on error.
-        """
         if not os.path.exists(path):
             logger.warning(f"⚠️ Config file not found at {path}. Using defaults.")
             return {}
@@ -104,11 +124,6 @@ class GraphCleaner:
             return {}
 
     def _init_chain(self) -> None:
-        """Initialize LLM model and prompt template for batch cleaning.
-        
-        Sets up Google Generative AI model with structured output schema
-        and loads system/human prompts from config.
-        """
         load_dotenv()
         if not os.getenv("GOOGLE_API_KEY"):
             raise ValueError("❌ GOOGLE_API_KEY not found in environment.")
@@ -128,65 +143,65 @@ class GraphCleaner:
 
         llm = llm_raw.with_structured_output(BatchCleaningResult)
 
-        # Default system and human prompts if not in config
-        # These guide the LLM on relationship normalization rules
-
+        # ---------------------------------------------------------------------
+        # PROMPT ACTUALIZADO PARA MANEJAR TITULOS CONCATENADOS
+        # ---------------------------------------------------------------------
         default_system_prompt = """
-You are a data cleaning assistant for a Game of Thrones knowledge graph.
+            You are a STRICT TEXT PROCESSING ENGINE for a dataset.
+            You are NOT a knowledge base. You DO NOT know anything about Game of Thrones.
 
-You receive a BATCH of nodes. For each node you are given:
-- id: the node identifier (e.g. "Jon Snow").
-- type: the node type (Character, House, Object, etc.).
-- raw_properties: the RAW infobox properties extracted from a fan wiki (possibly messy).
+            INPUT: You receive a BATCH of nodes with 'raw_properties'.
+            TASK: Clean, split, and normalize the STRINGS inside 'raw_properties'.
+            
+            CRITICAL ANTI-HALLUCINATION RULES:
+            1. INPUT-OUTPUT PARITY: You may ONLY output property keys that exist in the input 'raw_properties'.
+            2. NO EXTERNAL KNOWLEDGE: Do not infer facts. If the text says "Father: Unknown", output [].
+            3. CONTENT ONLY: Process only the text provided.
 
-Your goal is to build a CLEAN view of relationship-bearing fields, by splitting
-concatenated names into a list of individual entities.
+            Focus on cleaning these properties (if they exist in input):
+            - Family: Father, Mother, Children, Issue, Siblings
+            - Couple: Spouse, Lovers
+            - Politics: House, Affiliation, Titles (Look for concatenated titles!)
+            - Succession: Successor, Predecessor, Heir
+            - Production: DeathEp (episode title ONLY), Actor
+            - AKA (alternative names)
 
-Focus primarily on properties that refer to other entities, such as (if present):
-- Father, Mother, Children, Issue, Siblings
-- Spouse, Lovers
-- House, Affiliation, Allegiance, Overlords, Vassals
-- Owners, Creator, Weapon, Ancestral Weapon
-- Culture, Religion
-- Combatants, Commanders, Conflict, War
-- AKA  (alternative names / aliases for the same entity)
+            Processing Rules:
 
-Rules:
-1. Use the raw property text AS GROUND TRUTH. Do not invent entities that are not hinted in the text.
-2. Split concatenated names into separate items, for example:
-   - "Rhaegar Targaryen Eddard Stark"  -> ["Rhaegar Targaryen", "Eddard Stark"]
-   - "House StarkNights Watch"        -> ["House Stark", "Night's Watch"]
-   - "Robb StarkJon Snow Sansa Stark" -> ["Robb Stark", "Jon Snow", "Sansa Stark"]
-3. Preserve full names as they would appear in a wiki page title:
-   examples: "Jon Snow", "Daenerys Targaryen", "House Stark", "Night's Watch".
-4. If a string is ambiguous and you are not confident in splitting, keep it as a single item.
-5. Ignore descriptive fields such as Birth, Death, Titles, Series, Season, Appearances, Actor.
-6. If a property is missing or clearly empty, use an empty list for that property.
-7. Do NOT rename entities arbitrarily; prefer the text as written in the raw properties.
+            1. SPLITTING & CONCATENATION (Critical for 'Titles' and 'Affiliation'):
+               The data often misses spaces between words. You MUST split them based on capitalization.
+               
+               EXAMPLES:
+               - "Lord of the Iron IslandsKing of Salt and Rock" -> ["Lord of the Iron Islands", "King of Salt and Rock"]
+               - "Son of the Sea WindLord Reaper of Pyke" -> ["Son of the Sea Wind", "Lord Reaper of Pyke"]
+               - "Euron Greyjoy Yara Greyjoy" -> ["Euron Greyjoy", "Yara Greyjoy"]
+               - "House StarkNights Watch" -> ["House Stark", "Night's Watch"]
+               - "998th Lord Commander of the Nights Watch King in the North" -> ["998th Lord Commander of the Night's Watch", "King in the North"]
 
-Output format (very important):
-- You MUST return a JSON object.
-- The top-level object must have exactly one key named "results".
-- "results" must be a list.
-- Each element of "results" must be an object with:
-  - "id": the same id you received for that node.
-  - "normalized_relations": an object that maps property names (e.g. "Father", "House", "AKA")
-    to a list of cleaned entity strings.
+            2. PARENTHETICAL REMOVAL:
+               Remove status descriptions unless they are part of the name/title.
+               - "Aegon (died young)" -> ["Aegon"]
+               - "House Stark (formerly)" -> ["House Stark"]
+               
+            3. TITLES:
+               - Preserve full titles if they appear distinct.
+               - Separate concatenated titles into a LIST.
 
-If for a given node you do not find any relationship-bearing properties,
-use an empty object for "normalized_relations".
+            4. GARBAGE REMOVAL: 
+               If the text is generic ("sons", "unknown", "unnamed"), return [].
 
-Do not include explanations or markdown in your answer. Return only the JSON object.
-"""
+            Output format:
+            - Return ONLY a valid JSON object with "results".
+            """
 
         default_human_prompt = """
-Here is a batch of nodes to clean.
+        Here is a batch of nodes to clean.
 
-NODES JSON (list of objects with id, type and raw_properties):
-{nodes_json}
+        NODES JSON:
+        {nodes_json}
 
-Return ONLY the JSON object with the described structure.
-"""
+        Return ONLY the JSON object with the described structure.
+        """
 
         system_tmpl = self.prompts.get("cleaner_system", default_system_prompt)
         human_tmpl = self.prompts.get("cleaner_human", default_human_prompt)
@@ -199,181 +214,93 @@ Return ONLY the JSON object with the described structure.
         self.chain = prompt | llm
 
     # =========================================================================
-    # Main Entry Point
+    # Fingerprint / Incremental Re-clean
     # =========================================================================
 
-    def run(self) -> None:
-        """Main entrypoint: clean relationship fields and produce nodes_cleaned.jsonl.
-        
-        Process flow:
-        1. Load all nodes from input file
-        2. Check checkpoint for already-processed nodes
-        3. Identify candidates needing cleaning
-        4. Process in batches with LLM and retry on quota errors
-        5. Consolidate results into final output file
-        """
-        if not os.path.exists(self.nodes_in_path):
-            logger.error(f"❌ Nodes file not found: {self.nodes_in_path}")
-            return
-
-        self._init_chain()
-
-        # 1. Load all nodes
-        all_nodes = self._load_jsonl(self.nodes_in_path)
-        logger.info(f"📦 Loaded {len(all_nodes)} nodes from {self.nodes_in_path}")
-
-        # 2. Already processed IDs (checkpoint)
-        processed_ids = self._load_checkpoint_ids()
-        logger.info(f"🔁 Cleaner checkpoint has {len(processed_ids)} nodes")
-
-        # 3. Build candidate list
-        candidates: List[Dict[str, Any]] = []
-        for node in all_nodes:
-            nid = node.get("id")
-            if not nid or nid in processed_ids:
-                continue
-            if self._should_clean(node):
-                candidates.append(node)
-
-        logger.info(f"🎯 Nodes to clean in this run: {len(candidates)}")
-
-        # If no candidates, only consolidate
-        if not candidates:
-            self._consolidate_results(all_nodes)
-            logger.info("✅ No new candidates. Consolidation done.")
-            return
-
-        # 4. Process batch by batch, append to checkpoint
-        with open(self.checkpoint_path, "a", encoding="utf-8") as f_cp:
-            iterator = tqdm(
-                range(0, len(candidates), self.batch_size),
-                desc="🧹 Cleaning nodes",
-                unit="batch",
-            )
-
-            for i in iterator:
-                batch = candidates[i : i + self.batch_size]
-                cleaned_batch = self._process_batch_with_retry(batch)
-
-                for node in cleaned_batch:
-                    f_cp.write(json.dumps(node, ensure_ascii=False) + "\n")
-
-                f_cp.flush()
-                os.fsync(f_cp.fileno())
-                time.sleep(1)  # friendly to the API
-
-        # 5. Consolidate into nodes_cleaned.jsonl
-        self._consolidate_results(all_nodes)
-        logger.info(f"✅ Cleaning finished. Output: {self.nodes_out_path}")
-
-    # =========================================================================
-    # Batch LLM Processing with Retry Logic
-    # =========================================================================
-
-    def _process_batch_with_retry(self, nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Process batch of nodes through LLM with exponential backoff retry.
-        
-        Handles API quota errors (429) with exponential backoff.
-        Returns original nodes if cleaning fails after max retries.
-        
-        Args:
-            nodes: Batch of node dictionaries to clean.
-            
-        Returns:
-            Nodes with normalized_relations field added.
-        """
-        llm_nodes = []
-        for node in nodes:
-            raw_props = node.get("properties", {})
-            llm_nodes.append({
-                "id": node.get("id", ""),
-                "type": node.get("type", ""),
-                "raw_properties": raw_props,
-            })
-
+    def _node_fingerprint(self, node: Dict[str, Any]) -> str:
+        props = node.get("properties", {}) or {}
         payload = {
-            "nodes_json": json.dumps(llm_nodes, ensure_ascii=False)
+            "target_keys": sorted(list(self.target_keys)),
+            "values": {k: props.get(k) for k in sorted(self.target_keys) if k in props},
         }
+        s = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return hashlib.md5(s.encode("utf-8")).hexdigest()
 
-        for attempt in range(self.max_retries):
-            try:
-                response: BatchCleaningResult = self.chain.invoke(payload)
-                results_map: Dict[str, SingleNodeCleaning] = {
-                    res.id: res for res in response.results
-                }
-
-                output_nodes: List[Dict[str, Any]] = []
-                for node in nodes:
-                    nid = node.get("id")
-                    cleaned = results_map.get(nid)
-                    if cleaned:
-                        node["normalized_relations"] = cleaned.normalized_relations
-                    output_nodes.append(node)
-                return output_nodes
-
-            except Exception as e:
-                error_str = str(e)
-                if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-                    wait_time = (self.base_delay * (2 ** attempt)) + random.uniform(0, 1)
-                    logger.warning(
-                        f"⚠️ Quota hit in GraphCleaner. Waiting {wait_time:.1f}s... "
-                        f"(Attempt {attempt+1}/{self.max_retries})"
-                    )
-                    time.sleep(wait_time)
-                else:
-                    logger.error(f"❌ Critical error in cleaning batch: {e}")
-                    return nodes
-
-        logger.error(f"❌ Failed cleaning batch after {self.max_retries} retries.")
-        return nodes
+    def _load_checkpoint_index(self) -> Dict[str, str]:
+        idx: Dict[str, str] = {}
+        if os.path.exists(self.checkpoint_path):
+            logger.info(f"🔄 Found cleaner checkpoint: {self.checkpoint_path}")
+            with open(self.checkpoint_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        n = json.loads(line)
+                        nid = n.get("id")
+                        fp = n.get("fp")
+                        if nid and fp:
+                            idx[nid] = fp
+                    except Exception:
+                        continue
+        return idx
 
     # =========================================================================
     # Candidate Node Selection
     # =========================================================================
 
     def _should_clean(self, node: Dict[str, Any]) -> bool:
-        """Determine if a node should be cleaned by the LLM.
-        
-        Selects nodes of important types (Character, House, etc.) that have
-        relationship-bearing properties but haven't been normalized yet.
-        
-        Args:
-            node: Node dictionary to evaluate.
-            
-        Returns:
-            True if node should be cleaned, False otherwise.
-        """
         ntype = node.get("type", "")
-        props = node.get("properties", {})
+        props = node.get("properties", {}) or {}
 
-        # Only clean important node types
         if ntype not in ["Character", "House", "Organization", "Creature", "Object"]:
             return False
 
-        # Skip if already cleaned
-        if "normalized_relations" in node:
-            return False
-
-        # Clean if has at least one target relationship key
-        for k in props.keys():
-            if k in self.target_keys:
+        # Must have at least one relationship-bearing key with a non-empty value
+        for k in self.target_keys:
+            if props.get(k):
                 return True
-
         return False
+
+    # =========================================================================
+    # Post-processing (Deterministic Filters)
+    # =========================================================================
+
+    def _postprocess_normalized_relations(self, rels: Dict[str, Any]) -> Dict[str, List[str]]:
+        out: Dict[str, List[str]] = {}
+        if not isinstance(rels, dict):
+            return out
+
+        for k, v in rels.items():
+            if not isinstance(v, list):
+                continue
+
+            cleaned: List[str] = []
+            for item in v:
+                s = str(item).strip()
+                if not s:
+                    continue
+                low = s.lower().strip()
+                if low in self.GENERIC_BAD:
+                    continue
+                cleaned.append(s)
+
+            if k == "DeathEp":
+                cleaned = [x for x in cleaned if len(x) >= 3]
+                if len(cleaned) > 1:
+                    cleaned = [cleaned[0]]
+
+            if k == "Actor" and len(cleaned) > 1:
+                cleaned = [cleaned[0]]
+            
+            # NOTA: No limitamos 'Titles' a 1 elemento, permitimos lista.
+
+            out[k] = cleaned
+
+        return out
 
     # =========================================================================
     # File I/O Utilities
     # =========================================================================
 
     def _load_jsonl(self, path: str) -> List[Dict[str, Any]]:
-        """Load all nodes from JSONL file.
-        
-        Args:
-            path: Path to JSONL file.
-            
-        Returns:
-            List of node dictionaries. Invalid lines are skipped.
-        """
         data: List[Dict[str, Any]] = []
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
@@ -387,35 +314,7 @@ Return ONLY the JSON object with the described structure.
                         continue
         return data
 
-    def _load_checkpoint_ids(self) -> Set[str]:
-        """Load IDs of nodes already processed from checkpoint file.
-        
-        Returns:
-            Set of node IDs that have already been cleaned.
-        """
-        ids: Set[str] = set()
-        if os.path.exists(self.checkpoint_path):
-            logger.info(f"🔄 Found cleaner checkpoint: {self.checkpoint_path}")
-            with open(self.checkpoint_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        n = json.loads(line)
-                        nid = n.get("id")
-                        if nid:
-                            ids.add(nid)
-                    except Exception:
-                        continue
-        return ids
-
     def _consolidate_results(self, original_nodes: List[Dict[str, Any]]) -> None:
-        """Merge cleaned nodes from checkpoint with original nodes.
-        
-        Writes final consolidated output to nodes_cleaned.jsonl with all
-        relationship fields normalized.
-        
-        Args:
-            original_nodes: Original list of all nodes before cleaning.
-        """
         corrections: Dict[str, Dict[str, Any]] = {}
 
         if os.path.exists(self.checkpoint_path):
@@ -446,9 +345,134 @@ Return ONLY the JSON object with the described structure.
             f"(total: {len(final_nodes)})"
         )
 
+    # =========================================================================
+    # Batch LLM Processing with Retry Logic
+    # =========================================================================
+
+    def _process_batch_with_retry(self, nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        llm_nodes = []
+        node_security_map: Dict[str, Set[str]] = {}
+
+        for node in nodes:
+            nid = node.get("id", "")
+            raw_props_all = node.get("properties", {}) or {}
+            
+            raw_props = {k: raw_props_all.get(k) for k in self.target_keys if raw_props_all.get(k)}
+            
+            node_security_map[nid] = set(raw_props.keys())
+
+            llm_nodes.append({
+                "id": nid,
+                "type": node.get("type", ""),
+                "raw_properties": raw_props,
+            })
+
+        payload = {"nodes_json": json.dumps(llm_nodes, ensure_ascii=False)}
+
+        for attempt in range(self.max_retries):
+            try:
+                response: BatchCleaningResult = self.chain.invoke(payload)
+                results_map = {res.id: res for res in response.results}
+
+                output_nodes = []
+                for node in nodes:
+                    nid = node.get("id")
+                    cleaned = results_map.get(nid)
+                    
+                    if cleaned:
+                        allowed_keys = node_security_map.get(nid, set())
+                        safe_relations = {}
+                        
+                        for k, v in cleaned.normalized_relations.items():
+                            if k in allowed_keys:
+                                safe_relations[k] = v
+                            else:
+                                logger.warning(f"🛡️ Firewall: Blocked hallucinated property '{k}' for node '{nid}'")
+                        
+                        node["normalized_relations"] = self._postprocess_normalized_relations(safe_relations)
+                    else:
+                        node["normalized_relations"] = node.get("normalized_relations", {}) or {}
+
+                    node["fp"] = self._node_fingerprint(node)
+                    output_nodes.append(node)
+                
+                return output_nodes
+
+            except Exception as e:
+                logger.error(f"Error in batch: {e}")
+                # Exponential backoff
+                time.sleep(self.base_delay * (2 ** attempt))
+        
+        # Fallback if all retries fail
+        return nodes
+
+    # =========================================================================
+    # Main Entry Point
+    # =========================================================================
+
+    def run(self) -> None:
+        if not os.path.exists(self.nodes_in_path):
+            logger.error(f"❌ Nodes file not found: {self.nodes_in_path}")
+            return
+
+        self._init_chain()
+
+        all_nodes = self._load_jsonl(self.nodes_in_path)
+        logger.info(f"📦 Loaded {len(all_nodes)} nodes from {self.nodes_in_path}")
+
+        processed = self._load_checkpoint_index()
+        logger.info(f"🔁 Cleaner checkpoint index has {len(processed)} ids")
+
+        candidates: List[Dict[str, Any]] = []
+        for node in all_nodes:
+            nid = node.get("id")
+            if not nid:
+                continue
+
+            if not self._should_clean(node):
+                continue
+
+            fp = self._node_fingerprint(node)
+            if nid in processed and processed[nid] == fp:
+                continue
+
+            candidates.append(node)
+
+        logger.info(f"🎯 Nodes to clean in this run: {len(candidates)}")
+
+        if not candidates:
+            self._consolidate_results(all_nodes)
+            logger.info("✅ No new candidates. Consolidation done.")
+            return
+
+        os.makedirs(os.path.dirname(self.checkpoint_path) or ".", exist_ok=True)
+
+        with open(self.checkpoint_path, "a", encoding="utf-8") as f_cp:
+            iterator = tqdm(
+                range(0, len(candidates), self.batch_size),
+                desc="🧹 Cleaning nodes",
+                unit="batch",
+            )
+
+            for i in iterator:
+                batch = candidates[i: i + self.batch_size]
+                cleaned_batch = self._process_batch_with_retry(batch)
+
+                for node in cleaned_batch:
+                    if "fp" not in node:
+                        node["fp"] = self._node_fingerprint(node)
+                    f_cp.write(json.dumps(node, ensure_ascii=False) + "\n")
+
+                f_cp.flush()
+                os.fsync(f_cp.fileno())
+                time.sleep(1)
+
+        self._consolidate_results(all_nodes)
+        logger.info(f"✅ Cleaning finished. Output: {self.nodes_out_path}")
+
 
 if __name__ == "__main__":
-    from src.utils.logger import setup_logging
-    setup_logging()
+    # from src.utils.logger import setup_logging
+    # setup_logging()
     cleaner = GraphCleaner(data_dir="data/processed")
     cleaner.run()
