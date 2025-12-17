@@ -6,15 +6,16 @@ from tqdm import tqdm
 from dotenv import load_dotenv
 from typing import List, Dict, Any
 
+from src.utils.logger import setup_logging
+
 # LangChain Imports
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
-# Nota: Usamos StrOutputParser para evitar errores de parseo JSON estricto
+# Note: StrOutputParser is used to avoid strict JSON parsing errors
 from langchain_core.output_parsers import StrOutputParser
 from pydantic import BaseModel, Field
 
-# Configuración de Logs
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+setup_logging()
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("google.generativeai").setLevel(logging.WARNING)
@@ -26,11 +27,11 @@ load_dotenv()
 class LLMJudge:
     def __init__(self, model_name: str = "gemini-2.5-flash"):
         if not os.getenv("GOOGLE_API_KEY"):
-            raise ValueError("❌ GOOGLE_API_KEY no encontrada en .env")
+            raise ValueError("❌ GOOGLE_API_KEY not found in .env")
 
         self.llm = ChatGoogleGenerativeAI(
             model=model_name,
-            temperature=0, # Determinista
+            temperature=0,  # Deterministic
             google_api_key=os.getenv("GOOGLE_API_KEY"),
             max_retries=3
         )
@@ -81,35 +82,29 @@ class LLMJudge:
         return prompt | self.llm | StrOutputParser()
 
     def _robust_parse(self, text_output: str) -> Dict[str, Any]:
-        """
-        Intenta extraer JSON de respuestas sucias o mal formadas.
-        Si falla el JSON, usa Regex para buscar patrones como 'Score: 0'.
-        """
+        """Extract JSON from malformed responses, falling back to regex when needed."""
         text = text_output.strip()
         
-        # 1. Intentar limpiar bloques de código markdown
+        # 1. Remove markdown code fences if present
         if "```" in text:
             text = text.replace("```json", "").replace("```", "").strip()
         
-        # 2. Intentar parsear JSON directo
+        # 2. Try direct JSON parse
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            pass # Falló JSON puro, vamos al plan B
+            pass  # JSON parsing failed, try regex
 
-        # 3. Plan B: Extracción Heurística con Regex
+        # 3. Regex-based fallback
         score_match = re.search(r'(?:score|Score)["\s:]+([01])', text)
         score = int(score_match.group(1)) if score_match else 0
         
         reason = text.replace('"', '').replace('{', '').replace('}', '').strip()
-        
-        # Si falló el JSON, es bueno saberlo, pero no spamear logs si el regex lo salvó
-        # logger.warning(f"⚠️ JSON inválido rescatado con Regex. Score: {score}")
         return {"score": score, "reason": reason}
 
     def evaluate(self, predictions_path: str, results_path: str):
         if not os.path.exists(predictions_path):
-            logger.error(f"❌ No se encontró {predictions_path}")
+            logger.error(f"❌ Predictions file not found: {predictions_path}")
             return
 
         entries = []
@@ -117,22 +112,22 @@ class LLMJudge:
             for line in f:
                 entries.append(json.loads(line))
 
-        logger.info(f"👨‍⚖️ Iniciando evaluación de {len(entries)} respuestas...")
+        logger.info(f"👨‍⚖️ Starting evaluation of {len(entries)} responses...")
 
         results = []
         total_score = 0
         valid_items = 0
 
-        for entry in tqdm(entries, desc="Evaluando"):
+        for entry in tqdm(entries, desc="Evaluating"):
             try:
-                # Invocación al LLM
+                # LLM invocation
                 raw_response = self.chain.invoke({
                     "question": entry.get("question"),
                     "ground_truth": entry.get("ground_truth"),
                     "prediction": entry.get("prediction")
                 })
                 
-                # Parseo Robusto
+                # Robust parse
                 parsed_response = self._robust_parse(raw_response)
                 
                 final_record = {
@@ -151,7 +146,7 @@ class LLMJudge:
                 valid_items += 1
 
             except Exception as e:
-                logger.error(f"❌ Error fatal evaluando ID {entry.get('custom_id')}: {e}")
+                logger.error(f"❌ Fatal error while evaluating ID {entry.get('custom_id')}: {e}")
                 continue
 
         os.makedirs(os.path.dirname(results_path), exist_ok=True)
@@ -160,9 +155,9 @@ class LLMJudge:
                 f.write(json.dumps(res, ensure_ascii=False) + "\n")
 
         accuracy = (total_score / valid_items) * 100 if valid_items > 0 else 0
-        logger.info(f"\n📊 RESULTADOS FINALES ({valid_items} items):")
-        logger.info(f"🎯 Precisión Global: {accuracy:.2f}%")
-        logger.info(f"💾 Resultados: {results_path}")
+        logger.info(f"\n📊 FINAL RESULTS ({valid_items} items):")
+        logger.info(f"🎯 Overall accuracy: {accuracy:.2f}%")
+        logger.info(f"💾 Results written to: {results_path}")
         
         self._print_analytics(results)
 
@@ -173,7 +168,7 @@ class LLMJudge:
             src = r.get("evidence_source", "Unknown")
             by_source[src].append(r["score"])
             
-        print("\n📈 Desglose por Fuente:")
+        print("\n📈 Breakdown by source:")
         for source, scores in by_source.items():
             avg = (sum(scores) / len(scores)) * 100 if scores else 0
-            print(f"   - {source}: {avg:.2f}% ({len(scores)} preguntas)")
+            print(f"   - {source}: {avg:.2f}% ({len(scores)} questions)")
