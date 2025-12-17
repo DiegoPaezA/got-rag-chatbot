@@ -89,9 +89,27 @@ class Neo4jLoader:
                     if ntype not in nodes_by_type:
                         nodes_by_type[ntype] = []
                     
-                    props = data.get('properties', {})
+                    # 1. Cargar propiedades base
+                    props = data.get('properties', {}).copy()
+
+                    # 2. Sobrescribir con normalizados
+                    if 'normalized_relations' in data:
+                        props.update(data['normalized_relations'])
+
+                    # 3. --- CONVERTIR TODO A STRING (Aplanado Total) ---
+                    for key, val in list(props.items()):
+                        if isinstance(val, list):
+                            # Si la lista está vacía, string vacío
+                            if not val:
+                                props[key] = ""
+                            else:
+                                # Unimos todos los elementos con una coma
+                                # Ejemplo: ["Rhaena", "Jaehaerys"] -> "Rhaena, Jaehaerys"
+                                props[key] = ", ".join(str(x) for x in val)
+                    
+                    # 4. Asegurar campos obligatorios
                     props['id'] = data['id']
-                    props['name'] = data['id'] 
+                    props['name'] = props.get('name', data['id']) 
                     props['url'] = data.get('url', '')
                     props['confidence'] = data.get('confidence', 'Unknown')
                     
@@ -107,7 +125,6 @@ class Neo4jLoader:
                 for i in tqdm(range(0, len(nodes), batch_size), desc=f"Pushing {ntype}"):
                     batch = nodes[i : i + batch_size]
                     
-                    # UNWIND inserta muchas filas en 1 sola query
                     query = f"""
                     UNWIND $batch AS row
                     MERGE (n:{ntype} {{id: row.id}})
