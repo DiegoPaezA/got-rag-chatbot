@@ -15,9 +15,14 @@ class GraphSearcher:
     """Generate Cypher from natural language and query Neo4j."""
 
     def __init__(self, config_path: str = "cfg/config.json"):
+        """Initialize graph searcher with LLM and Neo4j settings from config.
+
+        Args:
+            config_path: Path to configuration file for prompts and settings.
+        """
         load_dotenv()
         
-        # 1. Carga de Configuración
+        # 1) Load configuration
         self.config = self._load_config(config_path)
         llm_settings = self.config.get("llm_settings", {})
         model_name = llm_settings.get("model_name", "gemini-2.5-flash")
@@ -25,13 +30,13 @@ class GraphSearcher:
 
         logger.info(f"⚙️ Initializing Graph Searcher with model: {model_name} (T={temperature})")
 
-        # 2. Configuración Neo4j
+        # 2) Neo4j settings
         self.neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
         self.neo4j_user = os.getenv("NEO4J_USER", "neo4j")
         self.neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
         self.driver = None 
 
-        # 3. Configuración LLM
+        # 3) LLM settings
         if not os.getenv("GOOGLE_API_KEY"):
             raise ValueError("❌ GOOGLE_API_KEY not found in .env")
 
@@ -41,11 +46,10 @@ class GraphSearcher:
             google_api_key=os.getenv("GOOGLE_API_KEY")
         )
 
-        # 4. Cache del Esquema (CRÍTICO PARA PERFORMANCE)
+        # 4) Schema cache (performance-critical)
         self._schema_cache: Optional[str] = None
 
-        # 5. Prompt Robusto (Fallback)
-        # Si no hay config, usamos este prompt experto por defecto
+        # 5) Robust default prompt (fallback)
         default_prompt = """
         You are an expert Neo4j Developer translating user questions into Cypher queries.
         
@@ -71,14 +75,14 @@ class GraphSearcher:
 
     def _load_config(self, path: str) -> Dict[str, Any]:
         """Safely load JSON config; return empty dict on failure."""
-        # Hacemos la ruta absoluta respecto al archivo actual para evitar errores
+        # Make the config path absolute relative to this file to avoid errors
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        # Asumiendo que cfg está en la raíz del proyecto (dos niveles arriba de src/rag)
+        # Assuming cfg is at project root (two levels above src/rag)
         project_root = os.path.dirname(os.path.dirname(base_dir))
         full_path = os.path.join(project_root, path)
 
         if not os.path.exists(full_path):
-            # Intento secundario directo (por si corres desde root)
+            # Secondary attempt (in case you run from project root)
             if os.path.exists(path):
                 full_path = path
             else:
@@ -92,6 +96,7 @@ class GraphSearcher:
             return {}
 
     def _get_driver(self):
+        """Return or initialize the Neo4j driver connection."""
         if self.driver is None:
             try:
                 self.driver = GraphDatabase.driver(
@@ -104,13 +109,15 @@ class GraphSearcher:
         return self.driver
 
     def close(self):
+        """Close the driver if it was opened."""
         if self.driver:
             self.driver.close()
 
     def _serialize(self, data: Any) -> Any:
+        """Serialize Neo4j driver results (nodes/rels) into JSON-serializable objects."""
         if isinstance(data, Node):
             node_dict = dict(data.items())
-            # Priorizamos 'name' o 'Title' para la visualización
+            # Prefer 'name' or 'Title' keys for display
             label = list(data.labels)[0] if data.labels else "Node"
             return {
                 "type": label,
@@ -133,7 +140,7 @@ class GraphSearcher:
 
     def get_schema(self) -> str:
         """Fetch schema with caching mechanism."""
-        # 1. Retornar Caché si existe
+        # 1) Return cache if available
         if self._schema_cache:
             return self._schema_cache
 
@@ -156,8 +163,8 @@ class GraphSearcher:
                     ""
                 ]
 
-                # 2) Properties (Simplificado para velocidad)
-                # Solo traemos propiedades de Character y House que son las importantes
+                # 2) Properties (simplified for speed)
+                # Fetch a few sample keys for important labels
                 important_labels = ["Character", "House", "Location", "Battle"]
                 for label in important_labels:
                     if label in labels:
@@ -169,7 +176,7 @@ class GraphSearcher:
                         if all_keys:
                             schema_lines.append(f"Properties for :{label} -> {', '.join(sorted(list(all_keys)))}")
 
-                # 3) Pattern Sampling (Tu lógica experta, mantenida)
+                # 3) Pattern sampling (kept minimal for speed)
                 schema_lines.append("\nValid Relationships (Sampled):")
                 if rel_types:
                     for rt in rel_types:
@@ -196,6 +203,7 @@ class GraphSearcher:
             """
 
     def generate_cypher(self, question: str) -> str:
+        """Generate a Cypher query from a natural-language question using the LLM."""
         schema = self.get_schema()
         
         prompt = PromptTemplate(
@@ -207,10 +215,10 @@ class GraphSearcher:
         
         try:
             response = chain.invoke({"schema": schema, "question": question})
-            # Limpieza robusta de Markdown
+            # Robustly strip markdown fences
             content = response.content
             content = content.replace("```cypher", "").replace("```", "").strip()
-            # Eliminar punto y coma final si existe (a veces causa error en driver python)
+            # Remove trailing semicolon which may error in python driver
             if content.endswith(";"):
                 content = content[:-1]
             return content
@@ -219,6 +227,7 @@ class GraphSearcher:
             return ""
 
     def run_query(self, question: str) -> List[Dict]:
+        """Generate and execute Cypher for the question, returning serialized results."""
         cypher_query = self.generate_cypher(question)
         
         if not cypher_query:
@@ -235,12 +244,12 @@ class GraphSearcher:
                 return self._serialize(data)
 
         except Exception as e:
-            # Si el error es de sintaxis, es útil loguearlo para debuggear
+            # If it's a syntax error, logging helps with debugging
             logger.error(f"❌ Neo4j Execution Error: {e}")
             return []
 
 if __name__ == "__main__":
-    # Test Rápido
+    # Quick test
     searcher = GraphSearcher()
     q = "Who is the father of Jon Snow?"
     print(f"Q: {q}")

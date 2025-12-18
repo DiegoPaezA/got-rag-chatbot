@@ -79,7 +79,7 @@ class GraphCleaner:
 
             # Politics / loyalties
             "House", "Affiliation", "Allegiance", "Overlords", "Vassals", 
-            "Titles", # <--- IMPORTANTE: Está aquí
+            "Titles", # IMPORTANT: included here
 
             # Succession
             "Successor", "Predecessor", "Heir",
@@ -144,7 +144,7 @@ class GraphCleaner:
         llm = llm_raw.with_structured_output(BatchCleaningResult)
 
         # ---------------------------------------------------------------------
-        # PROMPT ACTUALIZADO PARA MANEJAR TITULOS CONCATENADOS
+        # UPDATED PROMPT TO HANDLE CONCATENATED TITLES
         # ---------------------------------------------------------------------
         default_system_prompt = """
             You are a STRICT TEXT PROCESSING ENGINE for a dataset.
@@ -290,7 +290,7 @@ class GraphCleaner:
             if k == "Actor" and len(cleaned) > 1:
                 cleaned = [cleaned[0]]
             
-            # NOTA: No limitamos 'Titles' a 1 elemento, permitimos lista.
+            # Note: Do not limit 'Titles' to a single value; allow a list.
 
             out[k] = cleaned
 
@@ -472,7 +472,5 @@ class GraphCleaner:
 
 
 if __name__ == "__main__":
-    # from src.utils.logger import setup_logging
-    # setup_logging()
     cleaner = GraphCleaner(data_dir="data/processed")
     cleaner.run()

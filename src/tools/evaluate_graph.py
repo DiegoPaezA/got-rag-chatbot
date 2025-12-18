@@ -6,7 +6,7 @@ import pandas as pd
 from tqdm import tqdm
 from dotenv import load_dotenv
 
-# Hack de imports
+# Import hack to reach project root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from src.utils.logger import setup_logging
@@ -25,7 +25,7 @@ class GraphEvaluator:
         load_dotenv()
         self.searcher = GraphSearcher()
         
-        # Juez Estricto
+        # Strict judge
         self.judge = ChatGoogleGenerativeAI(
             model="gemini-2.5-flash",
             temperature=0.0,
@@ -33,9 +33,7 @@ class GraphEvaluator:
         )
 
     def evaluate_result(self, question, ground_truth, db_result, generated_cypher):
-        """
-        El LLM mira el JSON que devolvió la BD y decide si contiene la respuesta.
-        """
+        """Ask the LLM to decide if DB JSON contains the correct answer."""
         # Convertimos el resultado de la BD a string para el prompt
         db_result_str = json.dumps(db_result, ensure_ascii=False)
         
@@ -81,17 +79,16 @@ class GraphEvaluator:
                 if line.strip(): test_cases.append(json.loads(line))
 
         results = []
-        print(f"🕷️  Evaluando {len(test_cases)} consultas al Grafo...")
+        print(f"🕷️  Evaluating {len(test_cases)} graph queries...")
 
         for case in tqdm(test_cases):
             q = case["question"]
             truth = case["ground_truth"]
             
-            # 1. Generar Cypher
+            # 1) Generate Cypher
             cypher = self.searcher.generate_cypher(q)
             
-            # 2. Ejecutar
-            # Capturamos errores de sintaxis Cypher
+            # 2) Execute and capture possible Cypher syntax errors
             try:
                 db_data = self.searcher.run_query(q)
                 error = None
@@ -99,7 +96,7 @@ class GraphEvaluator:
                 db_data = []
                 error = str(e)
 
-            # 3. Juzgar
+            # 3) Judge
             if error:
                 score = 0
                 reason = f"Cypher Error: {error}"
@@ -117,7 +114,7 @@ class GraphEvaluator:
                 "Score": score,
                 "Reason": reason,
                 "Cypher": cypher,
-                "DB Output": str(db_data)[:100] + "..." # Truncar para el CSV
+                "DB Output": str(db_data)[:100] + "..."  # Truncate for CSV
             })
 
         # Reporte
@@ -127,7 +124,7 @@ class GraphEvaluator:
         
         acc = df["Score"].mean() * 100
         print(f"\n📊 Graph Accuracy: {acc:.1f}%")
-        print(f"📄 Detalles guardados en {OUTPUT_REPORT}")
+        print(f"📄 Details saved to {OUTPUT_REPORT}")
 
 if __name__ == "__main__":
     evaluator = GraphEvaluator()

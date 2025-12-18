@@ -13,27 +13,25 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ScraperConfig:
-    """Immutable configuration for the Scraper"""
+    """Immutable configuration for the scraper."""
     base_url: str
     user_agent: str = 'WesterosBot/5.0 (The Vacuum)'
     timeout: int = 10
     retry_delay: int = 5
 
 class WikiParser:
-    """Static class responsible for transforming and cleaning data"""
+    """Static class responsible for transforming and cleaning data."""
     
     @staticmethod
     def clean_text(raw_wikitext: str) -> Dict[str, Any]:
-        """
-        Processes raw wikitext and extracts infoboxes and clean text.
-        """
+        """Process raw wikitext and extract infoboxes and clean text."""
         if not raw_wikitext:
             return {"content": "", "infobox": {}}
 
         try:
             wikicode = mwparserfromhell.parse(raw_wikitext)
             
-            # 1. Extract Infobox
+            # 1) Extract infobox
             infobox = {}
             # Common infobox filters in fandom
             target_templates = ['infobox', 'character', 'house', 'episode', 'location']
@@ -47,7 +45,7 @@ class WikiParser:
                         if key and value:
                             infobox[key] = value
 
-            # 2. Extract Clean Text
+            # 2) Extract clean text
             full_text = wikicode.strip_code()
             # Specific cleanup for this use case
             if "Appearances" in full_text:
@@ -63,7 +61,7 @@ class WikiParser:
 
 
 class FandomScraper:
-    """Main class to orchestrate data download"""
+    """Main class to orchestrate data download."""
     
     def __init__(self, config: ScraperConfig):
         self.config = config
@@ -71,7 +69,7 @@ class FandomScraper:
         self.session.headers.update({'User-Agent': self.config.user_agent})
 
     def _make_request(self, params: Dict[str, Any]) -> Optional[Dict]:
-        """Internal wrapper to handle network errors and retries"""
+        """Internal wrapper to handle network errors and retries."""
         try:
             response = self.session.get(
                 self.config.base_url, 
@@ -86,7 +84,7 @@ class FandomScraper:
             return None
 
     def get_total_articles(self) -> int:
-        """Get the total article statistics"""
+        """Get the total article count from site statistics."""
         params = {
             "action": "query",
             "meta": "siteinfo",
@@ -99,7 +97,7 @@ class FandomScraper:
         return 0
 
     def get_all_pages_generator(self) -> Generator[Dict, None, None]:
-        """Generator that iterates over all pages (A-Z) handling pagination"""
+        """Iterate over all pages (A-Z) handling pagination."""
         ap_from = ""
         
         while True:
@@ -131,7 +129,7 @@ class FandomScraper:
                 break
 
     def fetch_page_detail(self, page_id: int, title: str) -> Optional[Dict[str, Any]]:
-        """Download and process an individual page"""
+        """Download and process an individual page."""
         params = {
             "action": "query",
             "prop": "revisions",
@@ -162,13 +160,10 @@ class FandomScraper:
             return None
 
     def run(self, output_path: str):
-        """
-        Runs the process. If the file already exists, it resumes from where it left off
-        and avoids duplicates.
-        """
+        """Run scraper and append pages to JSONL, resuming if file exists."""
         total_remote = self.get_total_articles()
         
-        # 1. Load already processed IDs to avoid repeating
+        # 1) Load already processed IDs to avoid repeating
         existing_ids = set()
         if os.path.exists(output_path):
             logger.info(f"📂 Found existing file at {output_path}. Checking processed IDs...")
@@ -186,7 +181,7 @@ class FandomScraper:
         # Ensure directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
-        # 2. Use 'a' mode (append) instead of 'w'
+        # 2) Use append mode ('a') instead of overwrite
         with open(output_path, 'a', encoding='utf-8') as f:
             # Progress bar
             progress_bar = tqdm(self.get_all_pages_generator(), total=total_remote, unit="page")
@@ -197,7 +192,7 @@ class FandomScraper:
                 page_id = page_meta['pageid']
                 title = page_meta['title']
                 
-                # 3. CHECK: If we already have it, skip
+                # 3) If we already have it, skip
                 if page_id in existing_ids:
                     skipped_count += 1
                     # Update the progress bar description for visual feedback
@@ -210,8 +205,7 @@ class FandomScraper:
                 
                 if content:
                     f.write(json.dumps(content) + "\n")
-                    # Good practice to flush periodically or rely on OS buffer
-                    # f.flush() 
+                    # OS buffer flushing is usually sufficient
                 
                 time.sleep(0.1)
                 

@@ -13,7 +13,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
 
-# Configuración de Logs
+# Logging configuration (kept local for script usage)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# --- CONFIGURACIÓN DE ESTRATIFICACIÓN ---
+# --- STRATIFICATION SETTINGS ---
 TARGET_DISTRIBUTION = {
     "Character": 0.30,
     "House": 0.25,
@@ -45,6 +45,7 @@ class QABatch(BaseModel):
 
 class StratifiedDatasetGenerator:
     def __init__(self, data_dir: str, model_name: str = "gemini-2.5-flash"):
+        """Initialize generator, data paths, and LLM judge backend."""
         self.data_dir = data_dir
         self.nodes_path = os.path.join(data_dir, "nodes_cleaned.jsonl")
         self.edges_path = os.path.join(data_dir, "edges.jsonl")
@@ -59,12 +60,12 @@ class StratifiedDatasetGenerator:
         )
         
         self.text_cache = {}
-        self.graph_context = defaultdict(list) # map[node_id] -> list of edges
+        self.graph_context = defaultdict(list)  # map[node_id] -> list of edges
 
     def _load_auxiliary_data(self):
-        """Carga texto y GRAFO en memoria."""
+        """Load narrative text and graph edges into memory caches."""
         
-        # 1. Cargar Texto (Cache)
+        # 1) Load narrative text (cache)
         if os.path.exists(self.docs_path):
             logger.info("📖 Cargando textos narrativos...")
             with open(self.docs_path, "r", encoding="utf-8") as f:
@@ -76,7 +77,7 @@ class StratifiedDatasetGenerator:
                         if did and txt: self.text_cache[did] = txt[:2000]
                     except: continue
         
-        # 2. Cargar Aristas (Grafo)
+        # 2) Load edges (graph)
         if os.path.exists(self.edges_path):
             logger.info("🕸️ Cargando estructura del grafo (Edges)...")
             with open(self.edges_path, "r", encoding="utf-8") as f:
@@ -87,11 +88,11 @@ class StratifiedDatasetGenerator:
                         rel = edge['relation']
                         tgt = edge['target']
                         
-                        # Guardamos aristas SALIENTES (Lo que el nodo hace)
+                        # Store outgoing edges (what the node does)
                         self.graph_context[src].append(f"(This Node) --[{rel}]--> {tgt}")
                         
-                        # Guardamos aristas ENTRANTES (Lo que le hacen al nodo)
-                        # CRÍTICO para Battles/Locations que son 'objetivos'
+                        # Store incoming edges (what is done to the node)
+                        # Critical for Battles/Locations which are often targets
                         self.graph_context[tgt].append(f"{src} --[{rel}]--> (This Node)")
                     except: continue
             logger.info(f"🕸️ Grafo cargado con contexto para {len(self.graph_context)} nodos.")
@@ -103,9 +104,9 @@ class StratifiedDatasetGenerator:
         if not os.path.exists(self.nodes_path):
             return []
 
-        self._load_auxiliary_data() # Carga Edges y Texto
+        self._load_auxiliary_data()  # Load edges and text
 
-        logger.info("📦 Clasificando nodos...")
+        logger.info("📦 Classifying nodes...")
         with open(self.nodes_path, "r", encoding="utf-8") as f:
             for line in f:
                 try:
@@ -119,9 +120,9 @@ class StratifiedDatasetGenerator:
                     has_props = len(n.get("properties", {})) > 0
                     has_text = nid in self.text_cache
                     
-                    # Inyectamos contexto enriquecido
+                    # Inject enriched context
                     if has_edges:
-                        # Limitamos a 15 conexiones aleatorias para no saturar el prompt
+                        # Limit contextual edges to 15 to avoid prompt bloat
                         edges = self.graph_context[nid]
                         if len(edges) > 15:
                             edges = random.sample(edges, 15)
@@ -137,7 +138,7 @@ class StratifiedDatasetGenerator:
                             nodes_by_type["Other"].append(n)
                 except: continue
 
-        # Selección Estratificada (Igual que antes)
+        # Stratified selection
         selected_nodes = []
         target_nodes_count = math.ceil(total_questions / 2.5)
         
@@ -150,7 +151,7 @@ class StratifiedDatasetGenerator:
             sample = random.sample(available, min(count_needed, len(available)))
             selected_nodes.extend(sample)
 
-        # Relleno si falta
+        # Fill deficit with Characters if needed
         if len(selected_nodes) < target_nodes_count:
             deficit = target_nodes_count - len(selected_nodes)
             extras = random.sample(nodes_by_type.get("Character", []), min(deficit, len(nodes_by_type.get("Character", []))))
@@ -160,7 +161,7 @@ class StratifiedDatasetGenerator:
         return selected_nodes
 
     def _create_chain(self):
-        # 1. Instrucciones del Sistema (Estáticas)
+        # 1) System instructions (static)
         system_instruction = """
         You are an expert Game of Thrones trivia master.
         
@@ -174,13 +175,13 @@ class StratifiedDatasetGenerator:
         Return ONLY a JSON object with a list 'qa_pairs'.
         """
 
-        # 2. Entrada del Usuario (Dinámica)
+        # 2) User input (dynamic)
         human_instruction = """
         Here is the Input Node data:
         {node_json}
         """
 
-        # 3. Construcción del Prompt con separación clara
+        # 3) Prompt construction with clear separation
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_instruction),
             ("human", human_instruction)
@@ -191,18 +192,19 @@ class StratifiedDatasetGenerator:
         return prompt | self.llm | parser
 
     def generate(self, num_questions=150):
+        """Generate a stratified QA dataset using node graph/text context."""
         nodes = self._load_and_stratify_nodes(num_questions)
         if not nodes: 
-            logger.error("❌ No hay nodos para procesar.")
+            logger.error("❌ No nodes to process.")
             return
 
         chain = self._create_chain()
         dataset = []
         
-        logger.info(f"🚀 Iniciando generación con LLM sobre {len(nodes)} nodos...")
+        logger.info(f"🚀 Starting LLM generation over {len(nodes)} nodes...")
         
-        # Barra de progreso manual
-        pbar = tqdm(total=num_questions, desc="Generando preguntas")
+        # Manual progress bar
+        pbar = tqdm(total=num_questions, desc="Generating questions")
         
         for node in nodes:
             if len(dataset) >= num_questions: break
@@ -227,17 +229,17 @@ class StratifiedDatasetGenerator:
                                     item["ground_truth"] = item.pop(alias)
                                     break
                         if "ground_truth" not in item:
-                            logger.warning(f"⚠️ Pregunta descartada por falta de ground_truth: {item}")
+                            logger.warning(f"⚠️ Discarded due to missing ground_truth: {item}")
                             continue
                         item["question_id"] = f"gen_{len(dataset)}"
                         item["source_type"] = node.get("type")
                         dataset.append(item)
                         pbar.update(1)
                 else:
-                    logger.warning(f"⚠️ Respuesta vacía del LLM para nodo: {node.get('id')}")
+                    logger.warning(f"⚠️ Empty LLM response for node: {node.get('id')}")
 
             except Exception as e:
-                logger.error(f"❌ Error generando para '{node.get('id')}': {str(e)}")
+                logger.error(f"❌ Error generating for '{node.get('id')}': {str(e)}")
                 continue
         
         pbar.close()
@@ -248,9 +250,9 @@ class StratifiedDatasetGenerator:
                 for item in dataset:
                     record = item if isinstance(item, dict) else item.dict()
                     f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            logger.info(f"✅ Dataset Generado: {self.output_path} ({len(dataset)} items)")
+            logger.info(f"✅ Dataset generated: {self.output_path} ({len(dataset)} items)")
         else:
-            logger.error("❌ No se generó ninguna pregunta. Revisa los errores arriba.")
+            logger.error("❌ No questions were generated. Check errors above.")
 
 if __name__ == "__main__":
     generator = StratifiedDatasetGenerator(data_dir="data/processed")

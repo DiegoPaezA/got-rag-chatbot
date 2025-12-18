@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set
 
 
-# Títulos/honoríficos comunes que generan mismatch: "Lord Cregan Stark" vs "Cregan Stark"
+# Common titles/honorifics that cause mismatches: "Lord Cregan Stark" vs "Cregan Stark"
 HONORIFICS: Set[str] = {
     "lord", "lady", "ser", "king", "queen", "prince", "princess",
     "maester", "septa", "sept", "captain", "commander", "warden",
@@ -18,11 +18,11 @@ PLACEHOLDER_PATTERNS = [
     re.compile(r"^(wife|wives|husband|spouse|mistress|paramour)$", re.I),
     re.compile(r"^(brother\(s\)|sister\(s\)|sibling\(s\))$", re.I),
     re.compile(r"^all of (his|her) (daughters|sons|children|offspring)$", re.I),
-    re.compile(r"^\d+\s+(salt\s+wives|wives|sons|daughters|children|bastards)$", re.I), # Ej: "3 sons"
+    re.compile(r"^\d+\s+(salt\s+wives|wives|sons|daughters|children|bastards)$", re.I), # e.g., "3 sons"
     re.compile(r"^(andals|the rhoynar|the first men)$", re.I),
     re.compile(r"^unidentified\s.*", re.I), # Ej: "Unidentified Stark"
 ]
-# Relaciones donde es MUY común que venga concatenado el valor (sin delimitadores claros)
+# Relations where concatenated values are very common (no clear delimiters)
 SEGMENT_REL_TYPES: Set[str] = {
     "CHILD_OF", "PARENT_OF", "SIBLING_OF", "MARRIED_TO", "LOVER_OF",
     "BELONGS_TO", "SWORN_TO", "AFFILIATED_WITH", "VASSAL_OF", "OVERLORD_OF",
@@ -134,7 +134,7 @@ TARGET_CONSTRAINTS = {
     "APPEARED_IN_SEASON": ["Episode", "Lore"],
 }
 
-# Property-to-relationship mapping (con Culture/Arms/Actor desactivados como edges)
+# Property-to-relationship mapping (with Culture/Arms/Actor disabled as edges)
 REL_MAP = {
     "Father": "FATHER",
     "Mother": "MOTHER",
@@ -187,15 +187,15 @@ REL_MAP = {
 class EdgeBuilderConfig:
     allow_missing_target_for: Set[str] = field(default_factory=lambda: {"APPEARED_IN_SEASON"})
 
-    # Reducción de missing targets
+    # Reduce missing targets
     enable_segmentation_fallback: bool = True
 
-    # Sintéticos para mejorar MATCH en loader
+    # Synthetic nodes to improve MATCH in loader
     enable_synthetic_house_for_belongs_to: bool = True
     enable_synthetic_seasons: bool = True
-    enable_synthetic_episode_for_died_in_episode: bool = False  # deja False por defecto
+    enable_synthetic_episode_for_died_in_episode: bool = False  # keep False by default
 
-    # Mapas
+    # Maps
     inverse_map: Dict[str, str] = field(default_factory=lambda: dict(INVERSE_MAP))
     schema_constraints: Dict[str, List[str]] = field(default_factory=lambda: dict(SCHEMA_CONSTRAINTS))
     target_constraints: Dict[str, List[str]] = field(default_factory=lambda: dict(TARGET_CONSTRAINTS))

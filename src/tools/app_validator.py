@@ -107,10 +107,10 @@ def save_gold_label(node_id, gold_type, comments=""):
     with open(GOLD_FILE, 'a', encoding='utf-8') as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-# --- INTERFAZ PRINCIPAL ---
+# --- MAIN INTERFACE ---
 
 st.title("🛡️ The Watchers on the Wall: Graph Validator")
-st.markdown("Herramienta de validación manual para crear el **Gold Standard**.")
+st.markdown("Manual validation tool to create the **Gold Standard**.")
 
 # 1. Cargar Datos
 df_all = load_data()
@@ -120,18 +120,17 @@ if df_all.empty:
 df_sample = get_stratified_sample(df_all, n=200)
 gold_map = load_existing_gold()
 
-# 2. Filtrar pendientes
-# Solo mostramos los que NO están en gold_map
+# 2. Filter pending entries (not present in gold_map)
 pending_df = df_sample[~df_sample['id'].isin(gold_map.keys())].reset_index(drop=True)
 completed_count = len(gold_map)
 total_target = len(df_sample)
 
-# Barra de progreso
+# Progress bar
 progress = completed_count / total_target
 st.progress(progress, text=f"Progreso: {completed_count}/{total_target} entidades validadas")
 
 if pending_df.empty:
-    st.success("🎉 ¡La guardia ha terminado! Has validado todas las entidades de la muestra.")
+    st.success("🎉 The watch has ended! You validated all entities in the sample.")
     st.balloons()
     
     # Mostrar botón para descargar
@@ -139,7 +138,7 @@ if pending_df.empty:
         st.download_button("Descargar Gold Labels", f, file_name="gold_labels.jsonl")
     st.stop()
 
-# 3. Mostrar Entidad Actual (La primera de la lista pendiente)
+# 3. Show Current Entity (the first pending one)
 current_node = pending_df.iloc[0]
 
 col1, col2 = st.columns([2, 1])
@@ -147,45 +146,44 @@ col1, col2 = st.columns([2, 1])
 with col1:
     st.subheader(f"⚔️ {current_node['id']}")
     
-    # Link a la Wiki
+    # Link to the Wiki
     if current_node.get('url'):
         st.markdown(f"🔗 [Abrir en Wiki Fandom]({current_node['url']}) (Revisa la fuente real)")
     
-    # Info actual
-    st.info(f"**Tipo Detectado:** {current_node['type']}")
+    # Current info
+    st.info(f"**Detected Type:** {current_node['type']}")
     
-    # Propiedades (Infobox)
-    st.markdown("#### 📜 Propiedades extraídas:")
+    # Properties (Infobox)
+    st.markdown("#### 📜 Extracted properties:")
     props = eval(str(current_node['properties'])) if isinstance(current_node['properties'], str) else current_node['properties']
     st.json(props)
 
 with col2:
-    st.markdown("### 🏷️ Validación Humana")
+    st.markdown("### 🏷️ Human Validation")
     
     # Formulario
     with st.form("validation_form"):
-        # Selector de tipo correcto
-        # Ponemos el tipo detectado como default si está en la lista, si no Lore
+        # Correct type selector; default to detected type if present
         default_idx = ALLOWED_TYPES.index(current_node['type']) if current_node['type'] in ALLOWED_TYPES else ALLOWED_TYPES.index("Lore")
         
         selected_type = st.selectbox(
-            "¿Cuál es la categoría CORRECTA?", 
+            "What is the CORRECT category?", 
             options=ALLOWED_TYPES,
             index=default_idx
         )
         
-        comments = st.text_input("Comentarios (opcional)", placeholder="Ej: Es ambiguo, pero cuenta como Battle")
+        comments = st.text_input("Comments (optional)", placeholder="e.g., Ambiguous, but counts as Battle")
         
-        submitted = st.form_submit_button("✅ Confirmar y Siguiente", type="primary")
+        submitted = st.form_submit_button("✅ Confirm and Next", type="primary")
         
         if submitted:
             save_gold_label(current_node['id'], selected_type, comments)
-            st.toast(f"Guardado: {current_node['id']} -> {selected_type}")
+            st.toast(f"Saved: {current_node['id']} -> {selected_type}")
             st.rerun() # Recargar para pasar al siguiente
 
 # Mostrar historial reciente en sidebar
 with st.sidebar:
-    st.header("Historial Reciente")
+    st.header("Recent History")
     if os.path.exists(GOLD_FILE):
         hist_df = pd.read_json(GOLD_FILE, lines=True).tail(10).iloc[::-1]
         st.dataframe(hist_df[['id', 'gold_type']], hide_index=True)

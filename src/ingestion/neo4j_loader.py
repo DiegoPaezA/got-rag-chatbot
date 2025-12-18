@@ -37,6 +37,7 @@ class Neo4jLoader:
         self.edges_path = os.path.join(data_dir, "edges.jsonl")
 
     def close(self):
+        """Close the Neo4j driver connection."""
         self.driver.close()
 
     def clean_db(self):
@@ -89,25 +90,25 @@ class Neo4jLoader:
                     if ntype not in nodes_by_type:
                         nodes_by_type[ntype] = []
                     
-                    # 1. Cargar propiedades base
+                    # 1. Load base properties
                     props = data.get('properties', {}).copy()
 
-                    # 2. Sobrescribir con normalizados
+                    # 2. Overwrite with normalized relations if present
                     if 'normalized_relations' in data:
                         props.update(data['normalized_relations'])
 
-                    # 3. --- CONVERTIR TODO A STRING (Aplanado Total) ---
+                    # 3. Convert all values to strings (fully flattened)
                     for key, val in list(props.items()):
                         if isinstance(val, list):
-                            # Si la lista está vacía, string vacío
+                            # Empty list -> empty string
                             if not val:
                                 props[key] = ""
                             else:
-                                # Unimos todos los elementos con una coma
-                                # Ejemplo: ["Rhaena", "Jaehaerys"] -> "Rhaena, Jaehaerys"
+                                # Join list items with commas
+                                # Example: ["Rhaena", "Jaehaerys"] -> "Rhaena, Jaehaerys"
                                 props[key] = ", ".join(str(x) for x in val)
                     
-                    # 4. Asegurar campos obligatorios
+                    # 4. Ensure required fields
                     props['id'] = data['id']
                     props['name'] = props.get('name', data['id']) 
                     props['url'] = data.get('url', '')
@@ -190,6 +191,6 @@ class Neo4jLoader:
             self.close()
 
 if __name__ == "__main__":
-    # Prueba directa
+    # Direct run
     loader = Neo4jLoader(data_dir="data/processed")
     loader.run()

@@ -6,6 +6,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from src.rag.graph_search import GraphSearcher
 
 def audit():
+    """Print a compact audit of node counts and relationship types in Neo4j."""
     print("🔍 NEO4J AUDIT")
     print("=====================")
     searcher = GraphSearcher()

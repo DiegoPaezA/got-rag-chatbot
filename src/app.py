@@ -6,11 +6,14 @@ import sys
 import logging
 import json
 
+# Ensure project root is on sys.path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
-sys.path.append(project_root)
+if project_root not in sys.path:
+    sys.path.append(project_root)
 
 from src.rag.retriever import HybridRetriever
+from src.rag.augmenter import ContextAugmenter
 from src.rag.generator import RAGGenerator
 
 # --- PAGE SETUP ---
@@ -73,10 +76,14 @@ st.markdown("""
 # --- INITIALIZATION (SINGLETON) ---
 @st.cache_resource
 def get_engine():
-    return HybridRetriever(), RAGGenerator()
+    """Initialize the 3 Pipeline components efficiently."""
+    retriever = HybridRetriever()
+    augmenter = ContextAugmenter()  # Loads its own LLM on startup
+    generator = RAGGenerator()      # Pure text generator
+    return retriever, augmenter, generator
 
 try:
-    retriever, generator = get_engine()
+    retriever, augmenter, generator = get_engine()
 except Exception as e:
     st.error(f"Failed to initialize RAG engine: {e}")
     st.stop()
@@ -88,7 +95,6 @@ if "messages" not in st.session_state:
 def format_chat_history(messages: list, limit: int = 4) -> list:
     """Convert Streamlit chat history to the retriever-friendly format."""
     history = []
-    # Skip the latest message because it is the current prompt we just added
     recent = messages[-limit:]
     for msg in recent:
         role = "Human" if msg["role"] == "user" else "AI"
@@ -104,7 +110,7 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Input
+# Input processing
 if prompt := st.chat_input("What connects the Great Houses?"):
     
     # 1. Show user message
@@ -119,71 +125,68 @@ if prompt := st.chat_input("What connects the Great Houses?"):
         try:
             with st.spinner("Consulting the archives..."):
                 
-                # A) Prepare chat history for memory (excluding the current prompt)
+                # A) Prepare chat history
                 history_tuples = format_chat_history(st.session_state.messages[:-1])
                 
-                # B) Retrieve with memory
-                context = retriever.retrieve(query=prompt, chat_history=history_tuples)
-                print(json.dumps(context, indent=2))  # Console debug
-                # C) Debug: show if the question was rewritten
-                if "refined_query" in context and context["refined_query"] != prompt:
+                # B) RETRIEVAL (Raw Data)
+                # Retrieve raw data from the graph and vectors
+                raw_context = retriever.retrieve(query=prompt, chat_history=history_tuples)
+                
+                # Important: Use the refined query (e.g., coreference resolved)
+                refined_query = raw_context.get("refined_query", prompt)
+                
+                # --- Debug: Query Refinement ---
+                if refined_query != prompt:
                     with st.expander("🧠 Maester's Thought Process (Query Refinement)"):
                         st.caption(f"Original: {prompt}")
-                        st.markdown(f"**Searching for:** `{context['refined_query']}`")
+                        st.markdown(f"**Searching for:** `{refined_query}`")       
 
-                # D) Source visualization: graph vs text
-                if context.get("vector_context") or context.get("graph_context"):
-                    with st.expander("📜 Ancient Scrolls & Lineages (Sources)", expanded=False):
+                # --- Debug: Sources ---
+                if raw_context.get("vector_context") or raw_context.get("graph_context"):
+                    with st.expander("📜 Ancient Scrolls & Lineages (Raw Sources)", expanded=False):
                         col1, col2 = st.columns(2)
-                        # --- COLUMN 1: GRAPH KNOWLEDGE ---
+                        
+                        # Graph Column
                         with col1:
                             st.subheader("🕸️ Graph Knowledge")
                             st.caption("Structured data from Neo4j")
-                            
-                            g_data = context.get("graph_context", [])
-                            
+                            g_data = raw_context.get("graph_context", [])
                             if g_data:
-                                for node in g_data:
-                                    with st.container():
-                                        # Visual header to separate each matched node
-                                        st.markdown("#### 🔹 Entity Match")
-                                        
-                                        # Iterate over every property returned for the node
-                                        for key, value in node.items():
-                                            # Cleanup: "c.name" -> "name"
-                                            clean_key = key.split(".")[-1] if "." in key else key
-                                            
-                                            # Render as list item
-                                            st.markdown(f"- **{clean_key}:** {value}")
-                                        
-                                        st.divider()
+                                # Show raw JSON for debugging
+                                st.json(g_data, expanded=False)
                             else:
                                 st.info("No direct graph connections found.")
 
-                        # --- COLUMN 2: TEXT FRAGMENTS ---
+                        # Vector Column
                         with col2:
                             st.subheader("📄 Text Fragments")
                             st.caption("Unstructured text from Vector DB")
-                            
-                            v_docs = context.get("vector_context", [])
-                            
+                            v_docs = raw_context.get("vector_context", [])
                             if v_docs:
-                                for i, doc in enumerate(v_docs[:4], 1):
-                                    st.markdown(f"""
-                                    <div class="fragment-card">
-                                        <div style='color: #d4af37; font-weight: bold; font-size: 0.8em; margin-bottom:5px;'>
-                                            📜 Fragment {i}
-                                        </div>
-                                        <div style='color: #e0e0e0; font-size: 0.85em; line-height: 1.4;'>
-                                            {doc[:400]}...
-                                        </div>
-                                    </div>
-                                    """, unsafe_allow_html=True)
+                                for i, doc in enumerate(v_docs[:3], 1):
+                                    st.markdown(f"**Fragment {i}:** {doc[:200]}...")
                             else:
                                 st.info("No text fragments found.")
 
-                # E) Generation
-                full_response = generator.generate_answer(prompt, context)
+                # C) AUGMENTATION (The Analyst)
+                # Transform raw data into a narrative intelligence report
+                formatted_context_str = augmenter.build_context(
+                    query=refined_query,  # CRITICAL: Pass the refined query so the LLM focuses the report
+                    vector_context=raw_context.get("vector_context", []),
+                    graph_context=raw_context.get("graph_context", [])
+                )
+                
+                # Show the generated report to understand what the final generator 'reads'
+                with st.expander("🧐 Intelligence Report (Formatted Context)", expanded=False):
+                    st.markdown(formatted_context_str)
+                
+                # D) GENERATION (The Maester)
+                # The final generator only receives the formatted report and the question
+                full_response = generator.generate_answer(
+                    question=refined_query, 
+                    formatted_context=formatted_context_str
+                )
+                
                 message_placeholder.markdown(full_response)
             
         except Exception as e:

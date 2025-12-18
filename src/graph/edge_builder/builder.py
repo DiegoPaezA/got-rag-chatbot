@@ -25,6 +25,12 @@ class EdgeBuilder:
     """Build relationship edges from node properties with schema validation + robust target resolution (modular)."""
 
     def __init__(self, data_dir: str, config: EdgeBuilderConfig | None = None):
+        """Initialize the edge builder with data directory and configuration.
+
+        Args:
+            data_dir: Directory containing node and output files.
+            config: Optional `EdgeBuilderConfig`; uses defaults when omitted.
+        """
         self.data_dir = data_dir
         self.config = config or EdgeBuilderConfig()
 
@@ -35,21 +41,22 @@ class EdgeBuilder:
         self.alias = AliasIndex(honorifics=HONORIFICS, placeholder_keys={self._norm_alias(x) for x in PLACEHOLDER})
         
     def _is_placeholder_target(self, s: str) -> bool:
-            """Detecta si el target es basura/genérico usando Regex y Set."""
+            """Return True if target string is generic/placeholder using sets and regex."""
             if not s:
                 return True
             raw = str(s).strip()
             if not raw:
                 return True
             
-            # 1. Chequeo rápido en Set (normalizado)
+            # 1) Fast set check (normalized)
             key = self.alias.norm(raw)
             if key in PLACEHOLDER:
                 return True
                 
-            # 2. Chequeo potente con Regex
+            # 2) Regex checks
             return any(p.match(raw) for p in PLACEHOLDER_PATTERNS)
     def run(self) -> None:
+        """Execute the full edge-building pipeline over all nodes."""
         if not os.path.exists(self.nodes_path):
             logger.error(f"❌ Nodes file not found at {self.nodes_path}")
             return
@@ -61,7 +68,7 @@ class EdgeBuilder:
         self.alias.build(nodes_map)
         count_manual = 0
         for alias_val, canonical_id in MANUAL_ALIASES.items():
-            # Validación de seguridad: solo agregar si el ID canónico existe
+            # Safety check: only add if the canonical ID exists
             if canonical_id in nodes_map:
                 self.alias.add_alias_safely(alias_val, canonical_id)
                 count_manual += 1
@@ -114,6 +121,7 @@ class EdgeBuilder:
         audit: AuditCollector,
         registry: SyntheticRegistry,
     ) -> None:
+        """Process a single node and emit edges based on relation-bearing fields."""
         node_type = node.get("type", "Lore")
 
         raw_props = node.get("properties", {}) or {}
@@ -153,6 +161,11 @@ class EdgeBuilder:
         audit: AuditCollector,
         registry: SyntheticRegistry,
     ) -> None:
+        """Handle one relation-bearing field: resolve targets and create edges.
+
+        Applies schema constraints, alias resolution, segmentation fallback, and
+        synthetic node creation policies before writing edges into `edges_set`.
+        """
         rel_type = self.config.rel_map.get(rel_key)
         if not rel_type:
             return
@@ -255,6 +268,7 @@ class EdgeBuilder:
         registry: SyntheticRegistry,
         expected_target_types: List[str],
     ) -> None:
+        """Process segmented candidate targets for a relation field."""
         for seg_target in seg:
             resolved, reason = self.alias.resolve(
                 raw_target=seg_target,
@@ -304,6 +318,7 @@ class EdgeBuilder:
         nodes_map: Dict[str, Dict[str, Any]],
         registry: SyntheticRegistry,
     ) -> str:
+        """Optionally create and return a synthetic node ID for specific relations."""
         # BELONGS_TO -> House synthetic
         if (
             self.config.enable_synthetic_house_for_belongs_to
@@ -345,6 +360,7 @@ class EdgeBuilder:
         edges_set: Set[Tuple[str, str, str]],
         stats: EdgeStats,
     ) -> None:
+        """Create a direct edge and, when appropriate, its inverse/symmetric counterpart."""
         direct = (source_id, rel_type, target_id)
         if direct not in edges_set:
             edges_set.add(direct)
@@ -369,6 +385,7 @@ class EdgeBuilder:
         nodes_map: Dict[str, Dict[str, Any]],
         stats: EdgeStats,
     ) -> None:
+        """Add `APPEARED_IN_SEASON` edges based on season/appearances properties."""
         props = node.get("properties", {}) or {}
         season_val = props.get("Season") or props.get("Appearances")
         if not season_val:
@@ -387,6 +404,7 @@ class EdgeBuilder:
     # --------------------------
 
     def _bump_resolution_stats(self, stats: EdgeStats, reason: str) -> None:
+        """Increment resolution counters for audit and observability."""
         if reason == "alias":
             stats.targets_resolved_by_alias += 1
         elif reason == "house_prefix":
@@ -395,6 +413,7 @@ class EdgeBuilder:
             stats.ambiguous_alias_unresolved += 1
 
     def _log_stats(self, edges_list: List[Dict[str, Any]], stats: EdgeStats) -> None:
+        """Log a compact summary of edge-building statistics."""
         logger.info("📊 Edge Creation Statistics:")
         logger.info(f"   Total Unique Edges Created: {len(edges_list)}")
         logger.info(f"   Relationships Skipped by Schema: {stats.skipped_schema}")
@@ -407,4 +426,5 @@ class EdgeBuilder:
         logger.info(f"   Synthetic Nodes Created: {stats.synthetic_nodes_created}")
 
     def _norm_alias(self, s: str) -> str:
+        """Normalize alias strings to lowercase alphanumerics only."""
         return "".join(ch.lower() for ch in str(s) if ch.isalnum())
