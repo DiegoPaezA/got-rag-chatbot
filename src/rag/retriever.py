@@ -14,16 +14,22 @@ logger = logging.getLogger("HybridRetriever")
 
 class HybridRetriever:
     def __init__(self, data_dir: str = "data/processed", config_path: str = "cfg/config.json"):
+        """Initialize retriever with graph and vector backends plus query rewriter.
+
+        Args:
+            data_dir: Base path for processed data; used to locate Chroma DB.
+            config_path: Path to configuration with LLM and embedding settings.
+        """
         load_dotenv()
         
-        # 1. Cargar Configuración para el LLM interno
+        # 1) Load configuration for internal LLM
         self.config = self._load_config(config_path)
         llm_settings = self.config.get("llm_settings", {})
         
-        # 2. Inicializar GraphSearcher (Pura búsqueda)
+        # 2) Initialize GraphSearcher (pure Cypher-based retrieval)
         self.graph_searcher = GraphSearcher(config_path=config_path)
 
-        # 3. Inicializar Vector Store
+        # 3) Initialize vector store
         data_root = os.path.dirname(data_dir.rstrip('/'))
         self.chroma_path = os.path.join(data_root, "chromadb")
         
@@ -42,16 +48,17 @@ class HybridRetriever:
 
         self.llm = ChatGoogleGenerativeAI(
             model=llm_settings.get("model_name", "gemini-2.5-flash"),
-            temperature=0, # Queremos precisión al reescribir
+            temperature=0,  # Deterministic rewriting
             google_api_key=os.getenv("GOOGLE_API_KEY")
         )
 
     def _load_config(self, path: str) -> Dict[str, Any]:
+        """Load JSON config safely; return empty dict on failure."""
         if not os.path.exists(path): return {}
         with open(path, "r") as f: return json.load(f)
 
     def contextualize_query(self, question: str, history: List[Tuple[str, str]]) -> str:
-        """Reescribe la pregunta basándose en el historial antes de buscar."""
+        """Rewrite the question using chat history for standalone retrieval."""
         if not history:
             return question
             
@@ -73,7 +80,7 @@ class HybridRetriever:
         chain = prompt | self.llm
         
         try:
-            # Invocación rápida al LLM
+            # Fast LLM invocation
             response = chain.invoke({"history": history_str, "question": question})
             reformulated = response.content.strip()
             if reformulated != question:
@@ -84,24 +91,25 @@ class HybridRetriever:
             return question
 
     def retrieve(self, query: str, chat_history: List[Tuple[str, str]] = None) -> Dict[str, Any]:
+        """Orchestrate retrieval across rewriter, vector DB, and graph search.
+
+        Steps:
+        1) Contextualize the query from chat history
+        2) Retrieve similar chunks from the vector store
+        3) Generate and execute Cypher against Neo4j graph
         """
-        Orquesta la búsqueda:
-        1. Limpia la pregunta (Contextualize)
-        2. Busca en Vectores (Similarity)
-        3. Busca en Grafo (Cypher)
-        """
-        # PASO 1: Contextualizar
+        # STEP 1: Contextualize
         refined_query = self.contextualize_query(query, chat_history)
         
         logger.info(f"🔎 Retrieval Strategy: '{query}' -> Using: '{refined_query}'")
         
         context = {
-            "refined_query": refined_query, # Devolvemos esto para que la UI lo sepa
+            "refined_query": refined_query,  # Return for UI visibility
             "vector_context": [],
             "graph_context": []
         }
 
-        # PASO 2: Vectores (Usando refined_query)
+        # STEP 2: Vector search (using refined_query)
         if self.vector_store:
             try:
                 docs = self.vector_store.similarity_search(refined_query, k=4)
@@ -109,9 +117,9 @@ class HybridRetriever:
             except Exception as e:
                 logger.error(f"❌ Vector search failed: {e}")
 
-        # PASO 3: Grafo (Usando refined_query)
+        # STEP 3: Graph search (using refined_query)
         try:
-            # El graph_searcher ahora solo recibe la query limpia y ejecuta Cypher
+            # GraphSearcher receives the cleaned query and executes Cypher
             graph_data = self.graph_searcher.run_query(refined_query)
             context["graph_context"] = graph_data
         except Exception as e:
