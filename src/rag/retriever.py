@@ -9,6 +9,7 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGener
 from langchain_core.prompts import PromptTemplate
 
 from src.rag.graph_search import GraphSearcher
+from src.config_manager import ConfigManager
 
 logger = logging.getLogger("HybridRetriever")
 
@@ -22,45 +23,49 @@ class HybridRetriever:
         """
         load_dotenv()
         
-        # 1) Load configuration for internal LLM
-        self.config = self._load_config(config_path)
-        llm_settings = self.config.get("llm_settings", {})
+        # Load configuration using ConfigManager
+        config_manager = ConfigManager()
+        llm_config = config_manager.get_llm_config("retriever")
+        embedding_config = config_manager.get("embedding_settings", default={})
+        processing_config = config_manager.get_processing_config("retriever")
         
-        # 2) Initialize GraphSearcher (pure Cypher-based retrieval)
+        # Initialize GraphSearcher (pure Cypher-based retrieval)
         self.graph_searcher = GraphSearcher(config_path=config_path)
 
-        # 3) Initialize vector store
+        # Initialize vector store
         data_root = os.path.dirname(data_dir.rstrip('/'))
         self.chroma_path = os.path.join(data_root, "chromadb")
         
         if os.path.exists(self.chroma_path):
             embeddings = GoogleGenerativeAIEmbeddings(
-                model="models/text-embedding-004",
+                model=embedding_config.get("model_name", "models/text-embedding-004"),
                 google_api_key=os.getenv("GOOGLE_API_KEY")
             )
             self.vector_store = Chroma(
                 persist_directory=self.chroma_path,
                 embedding_function=embeddings,
-                collection_name="got_knowledge_base"
+                collection_name=embedding_config.get("collection_name", "got_knowledge_base")
             )
         else:
             self.vector_store = None
 
         self.llm = ChatGoogleGenerativeAI(
-            model=llm_settings.get("model_name", "gemini-2.5-flash"),
-            temperature=0,  # Deterministic rewriting
+            model=llm_config.get("model", "gemini-2.5-flash"),
+            temperature=llm_config.get("temperature", 0),
             google_api_key=os.getenv("GOOGLE_API_KEY")
         )
-
-    def _load_config(self, path: str) -> Dict[str, Any]:
-        """Load JSON config safely; return empty dict on failure."""
-        if not os.path.exists(path): return {}
-        with open(path, "r") as f: return json.load(f)
+        
+        # Store search parameters from config
+        self.vector_search_k = processing_config.get("vector_search_k", 5)
+        self.chat_history_limit = processing_config.get("chat_history_limit", 3)
 
     def contextualize_query(self, question: str, history: List[Tuple[str, str]]) -> str:
         """Rewrite the question using chat history for standalone retrieval."""
         if not history:
             return question
+        
+        # Limit history to most recent entries
+        recent_history = history[-self.chat_history_limit:] if len(history) > self.chat_history_limit else history
             
         template = """
         Given a chat history and a latest user question which might reference context in the chat history, 
@@ -75,7 +80,7 @@ class HybridRetriever:
         Standalone Question:
         """
         
-        history_str = "\n".join([f"{role}: {text}" for role, text in history])
+        history_str = "\n".join([f"{role}: {text}" for role, text in recent_history])
         prompt = PromptTemplate(template=template, input_variables=["history", "question"])
         chain = prompt | self.llm
         
@@ -109,10 +114,10 @@ class HybridRetriever:
             "graph_context": []
         }
 
-        # STEP 2: Vector search (using refined_query)
+        # STEP 2: Vector search (using refined_query and k from config)
         if self.vector_store:
             try:
-                docs = self.vector_store.similarity_search(refined_query, k=4)
+                docs = self.vector_store.similarity_search(refined_query, k=self.vector_search_k)
                 context["vector_context"] = [doc.page_content for doc in docs]
             except Exception as e:
                 logger.error(f"❌ Vector search failed: {e}")

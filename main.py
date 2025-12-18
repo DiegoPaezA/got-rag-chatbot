@@ -8,6 +8,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import our modular components
 from src.utils.logger import setup_logging
+from src.config_manager import ConfigManager
 from src.ingestion.scraper import FandomScraper, ScraperConfig
 from src.ingestion.neo4j_loader import Neo4jLoader
 from src.graph.builder import GraphBuilder
@@ -23,6 +24,9 @@ from src.eval.judge import LLMJudge
 
 # Initialize centralized logging system
 setup_logging()
+
+# Load configuration
+ConfigManager.load("cfg/config.json")
 
 # Silence external library noise
 # logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -67,18 +71,24 @@ def main():
 
     args = parser.parse_args()
 
-    # --- DATA PATHS ---
-    RAW_DATA_PATH = "data/raw/wiki_dump.jsonl"
-    PROCESSED_DIR = "data/processed"
-    CONFIG_PATH = "cfg/config.json"
+    # --- DATA PATHS (from config) ---
+    paths = ConfigManager.get_paths()
+    RAW_DATA_PATH = paths.get("raw_data", "data/raw/wiki_dump.jsonl")
+    PROCESSED_DIR = paths.get("processed_dir", "data/processed")
+    CONFIG_PATH = paths.get("config_path", "cfg/config.json")
 
     # ==========================================
     # 1. SCRAPER EXECUTION
     # ==========================================
     if args.command == "scrape":
         logger.info("🚀 Starting Scraping Pipeline...")
-        config = ScraperConfig(base_url="https://gameofthrones.fandom.com/api.php", user_agent="WesterosBot/2.0", timeout=15)
-        scraper = FandomScraper(config)
+        scraper_cfg = ConfigManager.get_section("scraper")
+        scraper_config = ScraperConfig(
+            base_url=scraper_cfg.get("base_url", "https://gameofthrones.fandom.com/api.php"),
+            user_agent=scraper_cfg.get("user_agent", "WesterosBot/2.0"),
+            timeout=scraper_cfg.get("timeout", 15)
+        )
+        scraper = FandomScraper(scraper_config)
         scraper.run(output_path=RAW_DATA_PATH)
 
     # ==========================================
@@ -154,6 +164,10 @@ def main():
     elif args.command == "eval":
         logger.info("🧪 Starting Evaluation Pipeline (LLM-as-a-Judge)...")
         
+        eval_paths = config_manager.get_paths().get("eval", {})
+        predictions_path = eval_paths.get("predictions", "data/eval/predictions.jsonl")
+        results_path = eval_paths.get("results", "data/eval/evaluation_results.jsonl")
+        
         # --- STEP 1: GENERATION ---
         if args.step in ["generate", "all"]:
             logger.info(f"--- [EVAL 1/3] Generating Golden Dataset ({args.limit} questions) ---")
@@ -180,8 +194,8 @@ def main():
             try:
                 judge = LLMJudge()
                 judge.evaluate(
-                    predictions_path="data/eval/predictions.jsonl",
-                    results_path="data/eval/evaluation_results.jsonl"
+                    predictions_path=predictions_path,
+                    results_path=results_path
                 )
             except Exception as e:
                 logger.error(f"❌ Judge execution failed: {e}")

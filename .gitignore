@@ -22,3 +22,12 @@ reports/*
 
 # Logs
 logs/*.log
+# Security documentation (contains examples with credentials)
+SECURITY_NOTES.md
+HARDCODING_ANALYSIS.md
+MIGRATION_GUIDE.md
+EXECUTIVE_SUMMARY.md
+ANALYSIS_SUMMARY.txt
+QUICK_REFERENCE.md
+README_ANALYSIS.md
+INDEX.md

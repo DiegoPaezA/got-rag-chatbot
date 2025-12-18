@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
+from src.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -52,21 +53,17 @@ class GraphValidator:
         self.checkpoint_path = os.path.join(data_dir, "nodes_llm_checkpoint.jsonl")
         self.final_path = os.path.join(data_dir, "nodes_validated.jsonl")
         
-        self.batch_size = 10
-        self.max_text_length = 600
+        # Load Configuration using ConfigManager
+        config_manager = ConfigManager()
+        validator_config = config_manager.get_processing_config("validator")
         
-        # Load Configuration
-        self.config = self._load_config(config_path)
-        self.llm_settings = self.config.get("llm_settings", {})
-        self.prompts = self.config.get("prompts", {})
-        self.allowed_types = self.config.get("graph_settings", {}).get("allowed_types", [])
-
-    def _load_config(self, path: str) -> Dict[str, Any]:
-        if not os.path.exists(path):
-            logger.warning(f"⚠️ Config not found at {path}. Using defaults.")
-            return {"llm_settings": {}, "prompts": {}}
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        self.batch_size = validator_config.get("batch_size", 10)
+        self.max_text_length = validator_config.get("max_text_length", 600)
+        self.min_text_length = validator_config.get("min_text_length", 20)
+        
+        self.llm_settings = config_manager.get("llm_settings", default={})
+        self.prompts = config_manager.get("prompts", default={})
+        self.allowed_types = config_manager.get("graph_settings", "allowed_types", default=[])
 
     def validate(self) -> None:
         """Main validation entrypoint: validate node types against knowledge base.

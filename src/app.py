@@ -15,61 +15,67 @@ if project_root not in sys.path:
 from src.rag.retriever import HybridRetriever
 from src.rag.augmenter import ContextAugmenter
 from src.rag.generator import RAGGenerator
+from src.config_manager import ConfigManager
+
+# Load UI configuration
+config_manager = ConfigManager()
+ui_config = config_manager.get("ui", default={})
 
 # --- PAGE SETUP ---
 st.set_page_config(
-    page_title="Maester AI - Game of Thrones",
-    page_icon="🐉",
-    layout="wide"
+    page_title=ui_config.get("page_title", "Maester AI - Game of Thrones"),
+    page_icon=ui_config.get("page_icon", "🐉"),
+    layout=ui_config.get("layout", "wide")
 )
 
 # --- CSS STYLES ---
-st.markdown("""
+theme = ui_config.get("theme", {})
+st.markdown(f"""
 <style>
     /* Main background */
-    .main {
-        background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
-        color: #d4af37;
-    }
+    .main {{
+        background: {theme.get('background_gradient', 'linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%)')};
+        color: {theme.get('primary_color', '#d4af37')};
+    }}
     
     /* Global text color */
-    body {
-        color: #c0c0c0;
+    body {{
+        color: {theme.get('text_color', '#c0c0c0')};
         font-family: 'Georgia', serif;
-    }
+    }}
     
     /* Headings */
-    h1, h2, h3 {
-        color: #d4af37;
+    h1, h2, h3 {{
+        color: {theme.get('primary_color', '#d4af37')};
         font-family: 'Georgia', serif;
         text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.7);
-        border-bottom: 2px solid #8b7355;
+        border-bottom: 2px solid {theme.get('secondary_color', '#8b7355')};
         padding-bottom: 10px;
-    }
+    }}
     
     /* User messages */
-    .stChatMessage[data-testid="stChatMessageUser"] {
-        background-color: #2c3e50;
+    .stChatMessage[data-testid="stChatMessageUser"] {{
+        background-color: {theme.get('user_message_bg', '#2c3e50')};
         border-radius: 15px;
-        border: 1px solid #8b7355;
-    }
+        border: 1px solid {theme.get('secondary_color', '#8b7355')};
+    }}
     
     /* Assistant messages */
-    .stChatMessage[data-testid="stChatMessageAssistant"] {
-        background-color: #1a1f3a;
+    .stChatMessage[data-testid="stChatMessageAssistant"] {{
+        background-color: {theme.get('assistant_message_bg', '#1a1f3a')};
         border-radius: 15px;
-        border: 1px solid #d4af37;
-    }
+        border: 1px solid {theme.get('primary_color', '#d4af37')};
+    }}
 
     /* Fragment cards */
-    .fragment-card {
+    .fragment-card {{
         background: #15192b; 
         padding: 10px; 
         margin: 8px 0; 
-        border-left: 3px solid #8b7355; 
+        border-left: 3px solid {theme.get('secondary_color', '#8b7355')}; 
         border-radius: 4px;
         font-size: 0.9em;
-    }
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -102,8 +108,8 @@ def format_chat_history(messages: list, limit: int = 4) -> list:
     return history
 
 # --- MAIN UI ---
-st.title("🐉 Maester AI: The Citadel Archives")
-st.markdown("*Ask questions about the history, lineage, and secrets of Westeros.*")
+st.title(ui_config.get("title", "🐉 Maester AI - Citadel of Knowledge"))
+st.markdown(f"*{ui_config.get('subtitle', 'Your scholarly advisor on all matters of the Seven Kingdoms')}*")
 
 # Render chat history
 for message in st.session_state.messages:

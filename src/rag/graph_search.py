@@ -8,6 +8,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from neo4j import GraphDatabase
 from neo4j.graph import Node, Relationship
+from src.config_manager import ConfigManager
 
 logger = logging.getLogger("GraphSearch")
 
@@ -22,21 +23,21 @@ class GraphSearcher:
         """
         load_dotenv()
         
-        # 1) Load configuration
-        self.config = self._load_config(config_path)
-        llm_settings = self.config.get("llm_settings", {})
-        model_name = llm_settings.get("model_name", "gemini-2.5-flash")
-        temperature = llm_settings.get("temperature", 0.0)
+        # Load configuration using ConfigManager
+        config_manager = ConfigManager()
+        llm_config = config_manager.get_llm_config("graph_search")
+        model_name = llm_config.get("model", "gemini-2.5-flash")
+        temperature = llm_config.get("temperature", 0.0)
 
         logger.info(f"⚙️ Initializing Graph Searcher with model: {model_name} (T={temperature})")
 
-        # 2) Neo4j settings
+        # Neo4j settings from environment
         self.neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
         self.neo4j_user = os.getenv("NEO4J_USER", "neo4j")
         self.neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
         self.driver = None 
 
-        # 3) LLM settings
+        # LLM settings
         if not os.getenv("GOOGLE_API_KEY"):
             raise ValueError("❌ GOOGLE_API_KEY not found in .env")
 
@@ -46,10 +47,14 @@ class GraphSearcher:
             google_api_key=os.getenv("GOOGLE_API_KEY")
         )
 
-        # 4) Schema cache (performance-critical)
+        # Schema cache (performance-critical)
         self._schema_cache: Optional[str] = None
 
-        # 5) Robust default prompt (fallback)
+        # Get processing config
+        processing_config = config_manager.get_processing_config("graph_search")
+        self.cypher_limit = processing_config.get("cypher_limit", 20)
+
+        # Robust default prompt (fallback)
         default_prompt = """
         You are an expert Neo4j Developer translating user questions into Cypher queries.
         
@@ -68,32 +73,7 @@ class GraphSearcher:
         Cypher:
         """
         
-        self.cypher_prompt_template = self.config.get("prompts", {}).get(
-            "cypher_generation", 
-            default_prompt
-        )
-
-    def _load_config(self, path: str) -> Dict[str, Any]:
-        """Safely load JSON config; return empty dict on failure."""
-        # Make the config path absolute relative to this file to avoid errors
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        # Assuming cfg is at project root (two levels above src/rag)
-        project_root = os.path.dirname(os.path.dirname(base_dir))
-        full_path = os.path.join(project_root, path)
-
-        if not os.path.exists(full_path):
-            # Secondary attempt (in case you run from project root)
-            if os.path.exists(path):
-                full_path = path
-            else:
-                logger.warning(f"⚠️ Config file not found at {path}. Using defaults.")
-                return {}
-        try:
-            with open(full_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"❌ Error loading config: {e}")
-            return {}
+        self.cypher_prompt_template = config_manager.get("prompts", "cypher_generation", default=default_prompt)
 
     def _get_driver(self):
         """Return or initialize the Neo4j driver connection."""

@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from typing import List, Dict, Any
 
 from src.utils.logger import setup_logging
+from src.config_manager import ConfigManager
 
 # LangChain Imports
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -25,20 +26,29 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 class LLMJudge:
-    def __init__(self, model_name: str = "gemini-2.5-flash"):
+    def __init__(self, model_name: str = None):
         if not os.getenv("GOOGLE_API_KEY"):
             raise ValueError("❌ GOOGLE_API_KEY not found in .env")
 
+        # Load configuration
+        config_manager = ConfigManager()
+        llm_config = config_manager.get_llm_config("judge")
+        
+        # Use provided model_name or fall back to config
+        model = model_name or llm_config.get("model", "gemini-2.5-flash")
+
         self.llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            temperature=0,  # Deterministic
+            model=model,
+            temperature=llm_config.get("temperature", 0),
             google_api_key=os.getenv("GOOGLE_API_KEY"),
-            max_retries=3
+            max_retries=llm_config.get("max_retries", 3)
         )
         self.chain = self._create_chain()
 
     def _create_chain(self):
-        system_prompt = """
+        # Get prompts from config
+        config_manager = ConfigManager()
+        system_prompt = config_manager.get("prompts", "judge", "system", default="""
         You are an impartial judge evaluating a chatbot's answers about Game of Thrones.
         
         INPUT DATA:
@@ -66,13 +76,13 @@ class LLMJudge:
         INCORRECT EXAMPLE (Do NOT do this):
         Score: 0
         Reason: The answer is wrong because...
-        """
+        """)
 
-        human_prompt = """
+        human_prompt = config_manager.get("prompts", "judge", "human", default="""
         QUESTION: {question}
         GROUND TRUTH: {ground_truth}
         PREDICTION: {prediction}
-        """
+        """)
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),

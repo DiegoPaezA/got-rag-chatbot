@@ -15,7 +15,9 @@ A sophisticated Knowledge Graph and Retrieval-Augmented Generation (RAG) system 
 - **Error Handling**: Robust retry logic with exponential backoff for API rate limits
 - **Extensible Architecture**: Modular design with clear separation of concerns
 
-## 📁 Project Structure
+<details>
+
+<summary> 📁 Project Structure</summary>
 
 ```markdown
 got-rag-chatbot/
@@ -77,6 +79,7 @@ got-rag-chatbot/
 │
 └── main.py                 # CLI orchestrator
 ```
+</details>
 
 ## 🚀 Getting Started
 

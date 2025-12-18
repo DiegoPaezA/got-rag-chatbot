@@ -4,6 +4,7 @@ import logging
 from neo4j import GraphDatabase
 from tqdm import tqdm
 from dotenv import load_dotenv
+from src.config_manager import ConfigManager
 
 logger = logging.getLogger("Neo4jLoader")
 
@@ -28,6 +29,14 @@ class Neo4jLoader:
         password = os.getenv("NEO4J_PASSWORD", "password")
 
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
+
+        # Get batch sizes from config
+        config_manager = ConfigManager()
+        db_config = config_manager.get("database", "neo4j", default={})
+        batch_config = db_config.get("batch_sizes", {})
+        self.batch_size_nodes = batch_config.get("nodes", 1000)
+        self.batch_size_edges = batch_config.get("edges", 1000)
+        self.timeout = db_config.get("timeout", 30)
 
         # Prefer validated nodes; fall back to raw nodes if absent
         self.nodes_path = os.path.join(data_dir, "nodes_cleaned.jsonl")
@@ -118,13 +127,12 @@ class Neo4jLoader:
                 except Exception:
                     continue
 
-        batch_size = 1000
         with self.driver.session() as session:
             for ntype, nodes in nodes_by_type.items():
                 logger.info(f"   ➡️  Type '{ntype}': {len(nodes)} nodes")
                 
-                for i in tqdm(range(0, len(nodes), batch_size), desc=f"Pushing {ntype}"):
-                    batch = nodes[i : i + batch_size]
+                for i in tqdm(range(0, len(nodes), self.batch_size_nodes), desc=f"Pushing {ntype}"):
+                    batch = nodes[i : i + self.batch_size_nodes]
                     
                     query = f"""
                     UNWIND $batch AS row
@@ -162,12 +170,11 @@ class Neo4jLoader:
         
         logger.info(f"   ➡️  Total Edges to load: {count}")
 
-        batch_size = 1000
         with self.driver.session() as session:
             for rel_type, edges in edges_by_rel.items():
                 
-                for i in tqdm(range(0, len(edges), batch_size), desc=f"Linking {rel_type}"):
-                    batch = edges[i : i + batch_size]
+                for i in tqdm(range(0, len(edges), self.batch_size_edges), desc=f"Linking {rel_type}"):
+                    batch = edges[i : i + self.batch_size_edges]
                     
                     query = f"""
                     UNWIND $batch AS row

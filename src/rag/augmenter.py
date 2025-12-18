@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from src.config_manager import ConfigManager
 
 logger = logging.getLogger("ContextAugmenter")
 
@@ -25,24 +26,21 @@ class ContextAugmenter:
         """
         load_dotenv()
         
-        # 1) Load configuration (model, temperature, etc.)
-        self.config = self._load_config(config_path)
-        llm_settings = self.config.get("llm_settings", {})
+        # Load configuration using ConfigManager
+        config_manager = ConfigManager()
+        llm_config = config_manager.get_llm_config("augmenter")
         
-        model_name = llm_settings.get("model_name", "gemini-2.5-flash")
-        
-        # 2) Internal LLM instance (temperature 0 for factual fidelity)
+        # Internal LLM instance (temperature 0 for factual fidelity)
         self.llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            temperature=0, 
+            model=llm_config.get("model", "gemini-2.5-flash"),
+            temperature=llm_config.get("temperature", 0),
             google_api_key=os.getenv("GOOGLE_API_KEY")
         )
         
-        logger.info(f"🧠 Augmenter initialized with internal model: {model_name}")
+        logger.info(f"🧠 Augmenter initialized with internal model: {llm_config.get('model', 'gemini-2.5-flash')}")
 
-        # 3) Data Analyst prompt
-        self.narrator_prompt = PromptTemplate(
-            template="""
+        # Data Analyst prompt from config
+        prompt_template = config_manager.get("prompts", "augmenter", "narrator", default="""
             Task: You are a Data Analyst for the Citadel. Convert raw Graph Database records into clear, concise, natural language facts relevant to the User's Inquiry.
             
             USER INQUIRY: "{query}"
@@ -57,20 +55,12 @@ class ContextAugmenter:
             4. **Strictness:** Do not invent information. Only describe the provided JSON.
             
             OUTPUT (Bulleted list of facts):
-            """,
+            """)
+        
+        self.narrator_prompt = PromptTemplate(
+            template=prompt_template,
             input_variables=["query", "graph_data"]
         )
-
-    def _load_config(self, path: str) -> Dict[str, Any]:
-        """Safely load configuration JSON; return empty dict on failure."""
-        if not os.path.exists(path):
-            return {}
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Error loading config: {e}")
-            return {}
 
     def _narrate_graph_data(self, query: str, graph_data: List[Dict[str, Any]]) -> str:
         """Use the internal LLM to narrate graph JSON into readable facts."""

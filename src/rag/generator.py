@@ -3,6 +3,7 @@ import logging
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from dotenv import load_dotenv
+from src.config_manager import ConfigManager
 
 logger = logging.getLogger("RAGGenerator")
 
@@ -18,17 +19,20 @@ class RAGGenerator:
             config_path: Optional future use for custom prompts/settings.
         """
         load_dotenv()
-        # Minimal config loading stub (reserved for future customization)
+        
+        # Load configuration
+        config_manager = ConfigManager()
+        llm_config = config_manager.get_llm_config("generator")
         
         # Init LLM
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            temperature=0.3,
+            model=llm_config.get("model", "gemini-2.5-flash"),
+            temperature=llm_config.get("temperature", 0.3),
             google_api_key=os.getenv("GOOGLE_API_KEY")
         )
 
-        # Simplified prompt that expects a single pre-formatted context block
-        self.default_prompt = """
+        # Get prompt template from config
+        self.default_prompt = config_manager.get("prompts", "generator", "system", default="""
         You are Maester AI, a keeper of the Citadel's knowledge.
         
         INSTRUCTIONS:
@@ -44,7 +48,7 @@ class RAGGenerator:
         {question}
         
         ANSWER:
-        """
+        """)
 
     def generate_answer(self, question: str, formatted_context: str) -> str:
         """Generate an answer using the provided pre-formatted context.
