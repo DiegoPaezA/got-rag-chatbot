@@ -4,6 +4,7 @@ import logging
 from tqdm import tqdm
 
 from src.rag.retriever import HybridRetriever
+from src.rag.augmenter import ContextAugmenter
 from src.rag.generator import RAGGenerator
 
 # Local logging configuration and noise reduction
@@ -25,10 +26,11 @@ def run_inference():
         logger.error(f"❌ Input not found: {input_path}. Run generation first.")
         return
 
-    # 1) Initialize the real system
-    logger.info("⚙️ Initializing RAG components (Retriever + Generator)...")
+    # 1) Initialize the RAG pipeline components
+    logger.info("⚙️ Initializing RAG components (Retriever -> Augmenter -> Generator)...")
     try:
         retriever = HybridRetriever()
+        augmenter = ContextAugmenter()
         generator = RAGGenerator()
     except Exception as e:
         logger.error(f"❌ Error initializing RAG: {e}")
@@ -47,21 +49,31 @@ def run_inference():
         try:
             query = q['question']
             
-            # A) Retrieval (uses logic in src/rag/retriever.py)
-            # Queries both graph and vectors
-            context = retriever.retrieve(query)
+            # A) Retrieval (raw data from graph/vector stores)
+            raw_context_data = retriever.retrieve(query)
             
-            # B) Generation (uses logic in src/rag/generator.py)
-            # Synthesizes the final answer using the LLM
-            prediction = generator.generate_answer(query, context)
+            # B) Augmentation (processing and formatting for the LLM)
+            # Augmenter converts raw context into LLM-ready text
+            narrative_context = augmenter.build_context(
+                query=query,
+                vector_context=raw_context_data.get("vector_context", []),
+                graph_context=raw_context_data.get("graph_context", [])
+                )
+        
+            
+            # C) Generation (LLM synthesis)
+            # Generator consumes already-refined context
+            prediction = generator.generate_answer(query, narrative_context)
+            
             ground_truth = q.get('ground_truth', q.get('answer', 'N/A'))
-            # C) Save result
+            
+            # D) Save result
             result_entry = {
                 "custom_id": q.get('question_id'),
                 "question": query,
                 "ground_truth": ground_truth,
                 "prediction": prediction,
-                # Metadata for later analytics
+                "retrieved_context": narrative_context, 
                 "type": q.get('type', 'Unknown'),         
                 "evidence_source": q.get('evidence_source', 'Unknown')
             }
@@ -73,7 +85,7 @@ def run_inference():
             results.append({
                 "custom_id": q.get('question_id'),
                 "question": q['question'],
-                "ground_truth": q['ground_truth'],
+                "ground_truth": q.get('ground_truth', 'N/A'),
                 "prediction": "ERROR_DURING_INFERENCE",
                 "error": str(e)
             })
