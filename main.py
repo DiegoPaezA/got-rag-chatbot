@@ -164,7 +164,7 @@ def main():
     elif args.command == "eval":
         logger.info("🧪 Starting Evaluation Pipeline (LLM-as-a-Judge)...")
         
-        eval_paths = config_manager.get_paths().get("eval", {})
+        eval_paths = ConfigManager.get_paths().get("eval", {})
         predictions_path = eval_paths.get("predictions", "data/eval/predictions.jsonl")
         results_path = eval_paths.get("results", "data/eval/evaluation_results.jsonl")
         
