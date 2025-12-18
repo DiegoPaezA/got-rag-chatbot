@@ -15,3 +15,10 @@ data/raw/*
 data/processed/*
 data/chromadb/*
 data/neo4j_data/*
+data/eval/*
+data/gold/*
+
+reports/*
+
+# Logs
+logs/*.log
