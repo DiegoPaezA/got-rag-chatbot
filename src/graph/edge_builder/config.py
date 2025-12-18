@@ -101,7 +101,7 @@ SCHEMA_CONSTRAINTS = {
 
     # Meta / Production
     "PLAYED_BY": ["Character"],
-    "DIED_IN_EPISODE": ["Character", "Creature"],
+    # "DIED_IN_EPISODE": ["Character", "Creature"],
     "APPEARED_IN_SEASON": ["Character", "Creature"],
 }
 
@@ -130,7 +130,7 @@ TARGET_CONSTRAINTS = {
     "WIELDED_BY": ["Character", "Creature"],
     "CREATED_BY": ["Character", "Organization", "Lore"],
 
-    "DIED_IN_EPISODE": ["Episode", "Lore"],
+    # "DIED_IN_EPISODE": ["Episode", "Lore"],
     "APPEARED_IN_SEASON": ["Episode", "Lore"],
 }
 
@@ -179,7 +179,7 @@ REL_MAP = {
     # "Arms": "HAS_ARMS",
     # "Actor": "PLAYED_BY",
 
-    "DeathEp": "DIED_IN_EPISODE",
+    #"DeathEp": "DIED_IN_EPISODE",
 }
 
 
