@@ -222,7 +222,7 @@ python main.py build --use-llm
 - WikiText parsing with mwparserfromhell
 - Infobox extraction
 
-#### 2. **GraphBuilder** (`src/graph/builder.py`)
+#### 2. **GraphBuilder** (`src/graph/builder/builder.py`)
 
 - Heuristic type classification using scoring system
 - Property extraction and cleaning
@@ -376,12 +376,11 @@ After running the build pipeline, you'll see:
 
 ## 🚧 Future Enhancements
 
-- [ ] Vector database integration (ChromaDB)
-- [ ] RAG query engine
+- [X] Vector database integration (ChromaDB)
+- [X] RAG query engine
 - [ ] FastAPI REST API
-- [ ] Graph visualization
-- [ ] Neo4j export capability
-- [ ] Interactive chatbot interface
+- [X] Neo4j export capability
+- [X] Interactive chatbot interface
 
 ## 📝 License
 
