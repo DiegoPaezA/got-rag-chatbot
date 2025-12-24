@@ -18,9 +18,9 @@ from src.graph.edge_builder import EdgeBuilder
 from src.rag.vector_store import VectorDBBuilder
 
 
-from src.eval.dataset_generator import StratifiedDatasetGenerator
+from src.eval.dataset_generator import Neo4jDatasetGenerator
 from src.eval.inference import run_inference
-from src.eval.judge import LLMJudge
+from src.eval.judge import RAGJudge
 
 # Initialize centralized logging system
 setup_logging()
@@ -34,6 +34,7 @@ ConfigManager.load("cfg/config.json")
 # logging.getLogger("google.generativeai").setLevel(logging.WARNING)
 # logging.getLogger("grpc").setLevel(logging.WARNING)
 # logging.getLogger("chromadb").setLevel(logging.ERROR)
+logging.getLogger("langchain_google_genai").setLevel(logging.WARNING)
 
 logger = logging.getLogger("Orchestrator")
 
@@ -163,16 +164,12 @@ def main():
     # ==========================================
     elif args.command == "eval":
         logger.info("🧪 Starting Evaluation Pipeline (LLM-as-a-Judge)...")
-        
-        eval_paths = ConfigManager.get_paths().get("eval", {})
-        predictions_path = eval_paths.get("predictions", "data/eval/predictions.jsonl")
-        results_path = eval_paths.get("results", "data/eval/evaluation_results.jsonl")
-        
+       
         # --- STEP 1: GENERATION ---
         if args.step in ["generate", "all"]:
             logger.info(f"--- [EVAL 1/3] Generating Golden Dataset ({args.limit} questions) ---")
             try:
-                generator = StratifiedDatasetGenerator(data_dir=PROCESSED_DIR)
+                generator = Neo4jDatasetGenerator()
                 generator.generate(num_questions=args.limit)
             except Exception as e:
                 logger.error(f"❌ Generation failed: {e}")
@@ -192,11 +189,8 @@ def main():
         if args.step in ["judge", "all"]:
             logger.info("--- [EVAL 3/3] Running LLM Judge (Batch API) ---")
             try:
-                judge = LLMJudge()
-                judge.evaluate(
-                    predictions_path=predictions_path,
-                    results_path=results_path
-                )
+                judge = RAGJudge()
+                judge.evaluate()
             except Exception as e:
                 logger.error(f"❌ Judge execution failed: {e}")
                 return
