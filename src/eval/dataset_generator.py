@@ -3,246 +3,257 @@ import os
 import random
 import logging
 import math
-from collections import defaultdict
-from typing import List, Dict, Any
+from typing import List, Dict, Optional
 from tqdm import tqdm
 from dotenv import load_dotenv
+from neo4j import GraphDatabase
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
 
-# Logging configuration (kept local for script usage)
+from src.config_manager import ConfigManager
+
+# Configuración de Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("google.generativeai").setLevel(logging.WARNING)
-logging.getLogger("chromadb").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# --- STRATIFICATION SETTINGS ---
+# Distribución objetivo de tipos de nodos para el dataset
 TARGET_DISTRIBUTION = {
     "Character": 0.30,
     "House": 0.25,
-    "Battle": 0.15,      
-    "Location": 0.15,    
+    "Battle": 0.15,
+    "Location": 0.15,
     "Object": 0.10,
     "Organization": 0.05
 }
 
 class QAItem(BaseModel):
-    question: str = Field(description="A natural language question.")
-    ground_truth: str = Field(description="The precise answer.")
-    type: str = Field(description="The category (e.g., Battle, Lineage).")
+    question: str = Field(description="A fully self-contained natural language question.")
+    ground_truth: str = Field(description="The precise answer found in the graph.")
+    type: str = Field(description="Category (e.g., Relationship, Attribute).")
     difficulty: str = Field(description="Easy, Medium, or Hard.")
-    evidence_source: str = Field(description="Where did you get the answer from? Options: 'Graph' (Edges/Properties), 'Text' (Narrative), or 'Hybrid' (Both).")
+    evidence_source: str = Field(description="'Graph' or 'Properties'.")
 
 class QABatch(BaseModel):
     qa_pairs: List[QAItem]
 
-class StratifiedDatasetGenerator:
-    def __init__(self, data_dir: str, model_name: str = "gemini-2.5-flash"):
-        """Initialize generator, data paths, and LLM judge backend."""
-        self.data_dir = data_dir
-        self.nodes_path = os.path.join(data_dir, "nodes_cleaned.jsonl")
-        self.edges_path = os.path.join(data_dir, "edges.jsonl")
-        self.docs_path = os.path.join(data_dir, "wiki_dump.jsonl") 
-        self.output_path = os.path.join("data", "eval", "golden_dataset_150.jsonl")
+class Neo4jDatasetGenerator:
+    """Generates a Ground Truth QA dataset using live data from Neo4j."""
+
+    def __init__(self):
+        """Initialize Neo4j connection and LLM based on configuration."""
+        self.config = ConfigManager()
         
+        # Rutas desde config
+        self.output_path = ConfigManager.get("paths", "eval", "golden_dataset")
+        if not self.output_path:
+            self.output_path = "data/eval/golden_dataset_neo4j.jsonl"
+            logger.warning(f"⚠️ Output path not found in config. Using default: {self.output_path}")
+
+        # Configuración Neo4j
+        uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+        user = os.getenv("NEO4J_USER", "neo4j")
+        password = os.getenv("NEO4J_PASSWORD", "password")
+        
+        try:
+            self.driver = GraphDatabase.driver(uri, auth=(user, password))
+            self.driver.verify_connectivity()
+            logger.info("✅ Successfully connected to Neo4j.")
+        except Exception as e:
+            logger.error(f"❌ Error connecting to Neo4j: {e}")
+            raise e
+
+        # Configuración LLM (Generator)
+        llm_config = ConfigManager.get_llm_config("generator")
+        model_name = llm_config.get("model_name", "gemini-2.5-flash")
+        
+        # Temperatura BAJA para asegurar JSON válido y seguimiento de reglas
+        temperature = 0.1 
+        
+        logger.info(f"🤖 Initializing LLM Generator: {model_name} (Temp: {temperature})")
+
         self.llm = ChatGoogleGenerativeAI(
             model=model_name,
-            temperature=0.8,
+            temperature=temperature,
             google_api_key=os.getenv("GOOGLE_API_KEY"),
             max_retries=3
         )
-        
-        self.text_cache = {}
-        self.graph_context = defaultdict(list)  # map[node_id] -> list of edges
 
-    def _load_auxiliary_data(self):
-        """Load narrative text and graph edges into memory caches."""
-        
-        # 1) Load narrative text (cache)
-        if os.path.exists(self.docs_path):
-            logger.info("📖 Cargando textos narrativos...")
-            with open(self.docs_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        doc = json.loads(line)
-                        did = doc.get("id") or doc.get("title")
-                        txt = doc.get("text") or doc.get("content", "")
-                        if did and txt: self.text_cache[did] = txt[:2000]
-                    except: continue
-        
-        # 2) Load edges (graph)
-        if os.path.exists(self.edges_path):
-            logger.info("🕸️ Cargando estructura del grafo (Edges)...")
-            with open(self.edges_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        edge = json.loads(line)
-                        src = edge['source']
-                        rel = edge['relation']
-                        tgt = edge['target']
-                        
-                        # Store outgoing edges (what the node does)
-                        self.graph_context[src].append(f"(This Node) --[{rel}]--> {tgt}")
-                        
-                        # Store incoming edges (what is done to the node)
-                        # Critical for Battles/Locations which are often targets
-                        self.graph_context[tgt].append(f"{src} --[{rel}]--> (This Node)")
-                    except: continue
-            logger.info(f"🕸️ Grafo cargado con contexto para {len(self.graph_context)} nodos.")
+    def close(self):
+        self.driver.close()
 
-    def _load_and_stratify_nodes(self, total_questions: int) -> List[Dict]:
-        nodes_by_type: Dict[str, List[Dict]] = {k: [] for k in TARGET_DISTRIBUTION.keys()}
-        nodes_by_type["Other"] = [] 
-
-        if not os.path.exists(self.nodes_path):
-            return []
-
-        self._load_auxiliary_data()  # Load edges and text
-
-        logger.info("📦 Classifying nodes...")
-        with open(self.nodes_path, "r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    n = json.loads(line)
-                    nid = n.get("id")
-                    if not nid: continue
-                    
-                    ntype = n.get("type", "Other")
-                    
-                    has_edges = len(self.graph_context.get(nid, [])) > 0
-                    has_props = len(n.get("properties", {})) > 0
-                    has_text = nid in self.text_cache
-                    
-                    # Inject enriched context
-                    if has_edges:
-                        # Limit contextual edges to 15 to avoid prompt bloat
-                        edges = self.graph_context[nid]
-                        if len(edges) > 15:
-                            edges = random.sample(edges, 15)
-                        n["graph_connections"] = edges
-                    
-                    if has_text:
-                        n["narrative_text"] = self.text_cache[nid]
-
-                    if has_edges or has_props or has_text:
-                        if ntype in nodes_by_type:
-                            nodes_by_type[ntype].append(n)
-                        else:
-                            nodes_by_type["Other"].append(n)
-                except: continue
-
-        # Stratified selection
+    def _get_stratified_node_ids(self, total_questions: int) -> List[Dict]:
+        """Fetch candidate node IDs from Neo4j, balanced by type."""
         selected_nodes = []
-        target_nodes_count = math.ceil(total_questions / 2.5)
-        
-        for ntype, ratio in TARGET_DISTRIBUTION.items():
-            count_needed = math.ceil(target_nodes_count * ratio)
-            available = nodes_by_type.get(ntype, [])
-            if not available:
-                logger.warning(f"⚠️ {ntype}: 0 nodos disponibles.")
-                continue
-            sample = random.sample(available, min(count_needed, len(available)))
-            selected_nodes.extend(sample)
+        target_per_node = 2 
+        nodes_needed = math.ceil(total_questions / target_per_node)
 
-        # Fill deficit with Characters if needed
-        if len(selected_nodes) < target_nodes_count:
-            deficit = target_nodes_count - len(selected_nodes)
-            extras = random.sample(nodes_by_type.get("Character", []), min(deficit, len(nodes_by_type.get("Character", []))))
-            selected_nodes.extend(extras)
+        logger.info("📊 Selecting candidate nodes from Neo4j...")
+        
+        with self.driver.session() as session:
+            for label, ratio in TARGET_DISTRIBUTION.items():
+                count = math.ceil(nodes_needed * ratio)
+                
+                # Query compatible con Neo4j 5+ (COUNT {})
+                # Seleccionamos nodos que tengan al menos 1 relación para preguntas interesantes
+                query = f"""
+                MATCH (n:{label})
+                WHERE COUNT {{ (n)--() }} > 0 
+                WITH n, rand() AS r
+                ORDER BY r
+                LIMIT $count
+                RETURN n.id AS id, labels(n) AS labels
+                """
+                
+                try:
+                    result = session.run(query, count=count)
+                    fetched = [{"id": record["id"], "type": label} for record in result]
+                    selected_nodes.extend(fetched)
+                    logger.info(f"   - {label}: {len(fetched)} nodes selected.")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error querying label {label}: {e}")
 
         random.shuffle(selected_nodes)
         return selected_nodes
 
+    def _fetch_node_context(self, node_id: str) -> Optional[Dict]:
+        """Retrieve the 'Ego Graph' (node + immediate neighbors) for LLM context."""
+        query = """
+        MATCH (n {id: $id})
+        OPTIONAL MATCH (n)-[r]-(m)
+        RETURN 
+            properties(n) as props,
+            type(r) as rel_type,
+            startNode(r) = n as is_outgoing,
+            m.id as neighbor_id,
+            m.name as neighbor_name
+        """
+        
+        with self.driver.session() as session:
+            result = session.run(query, id=node_id)
+            records = list(result)
+
+        if not records:
+            return None
+
+        core_props = records[0]["props"]
+        
+        # Construir representación textual de las relaciones
+        connections = []
+        for rec in records:
+            if rec["rel_type"]:
+                direction = "-->" if rec["is_outgoing"] else "<--"
+                neighbor = rec["neighbor_name"] or rec["neighbor_id"]
+                # Limpiar comillas para evitar romper el JSON del prompt
+                neighbor_clean = str(neighbor).replace('"', "'")
+                rel_str = f"(This Entity) {direction} [{rec['rel_type']}] {direction} ({neighbor_clean})"
+                connections.append(rel_str)
+        
+        return {
+            "id": node_id,
+            "properties": core_props,
+            "connections": connections
+        }
+
     def _create_chain(self):
-        # 1) System instructions (static)
+        """Construct the LangChain pipeline with strict 'Self-Contained' rules."""
+        
+        # IMPORTANTE: Usamos dobles llaves {{ }} para los ejemplos JSON dentro del prompt
         system_instruction = """
-        You are an expert Game of Thrones trivia master.
+        You are an expert Game of Thrones Trivia Master evaluating a GraphRAG system.
         
-        Task: Generate 2 DISTINCT Question-Answer pairs based strictly on the provided JSON data.
+        INPUT: A subgraph from a Neo4j database representing a specific entity.
         
-        Strategy:
-        - If 'graph_connections' exist, ask about relationships (e.g., "Who participated in X?"). Label evidence_source='Graph'.
-        - If 'narrative_text' exists, ask about history/reasons. Label evidence_source='Text'.
-        - Ground Truth must be exact strings found in the JSON.
+        TASK: Generate 2 Question-Answer pairs to test the system's retrieval capabilities.
         
-        Return ONLY a JSON object with a list 'qa_pairs'.
+        CRITICAL RULES FOR QUESTIONS (Do NOT ignore):
+        1. **Self-Contained:** The question MUST explicitly name the entity found in the properties.
+           - ❌ BAD: "What region is *this house* located in?"
+           - ❌ BAD: "Who owns *this item*?"
+           - ✅ GOOD: "What region is *House Stark* located in?"
+           - ✅ GOOD: "Who owns *Longclaw*?"
+        2. **No Meta-References:** NEVER mention "this node", "the provided data", "the graph", or "the JSON". Treat it as general trivia.
+        3. **Ground Truth:** Must be exact strings found in the input JSON (properties or connections).
+        
+        STRICT OUTPUT FORMAT:
+        Return ONLY a valid JSON object. No Markdown. No extra text.
+        
+        JSON STRUCTURE:
+        {{
+            "qa_pairs": [
+                {{
+                    "question": "What is the seat of House Stark?",
+                    "ground_truth": "Winterfell",
+                    "type": "Relationship",
+                    "difficulty": "Easy",
+                    "evidence_source": "Graph"
+                }}
+            ]
+        }}
         """
 
-        # 2) User input (dynamic)
         human_instruction = """
-        Here is the Input Node data:
+        Here is the Entity Data:
         {node_json}
         """
 
-        # 3) Prompt construction with clear separation
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_instruction),
             ("human", human_instruction)
         ])
         
         parser = JsonOutputParser(pydantic_object=QABatch)
-        
         return prompt | self.llm | parser
 
     def generate(self, num_questions=150):
-        """Generate a stratified QA dataset using node graph/text context."""
-        nodes = self._load_and_stratify_nodes(num_questions)
-        if not nodes: 
-            logger.error("❌ No nodes to process.")
+        """Main execution loop."""
+        nodes = self._get_stratified_node_ids(num_questions)
+        if not nodes:
+            logger.error("❌ No nodes found in Neo4j.")
             return
 
         chain = self._create_chain()
         dataset = []
         
-        logger.info(f"🚀 Starting LLM generation over {len(nodes)} nodes...")
+        logger.info(f"🚀 Generating questions using Neo4j data. Output: {self.output_path}")
+        pbar = tqdm(total=num_questions)
         
-        # Manual progress bar
-        pbar = tqdm(total=num_questions, desc="Generating questions")
-        
-        for node in nodes:
+        for node_meta in nodes:
             if len(dataset) >= num_questions: break
             
+            context = self._fetch_node_context(node_meta["id"])
+            if not context: continue
+
             try:
-                node_context = {
-                    "id": node.get("id"),
-                    "type": node.get("type"),
-                    "graph_connections": node.get("graph_connections", []),
-                    "properties": node.get("properties"),
-                    "narrative_text": node.get("narrative_text", "")
-                }
-                
-                response = chain.invoke({"node_json": json.dumps(node_context)})
+                # Pasar el contexto como JSON string
+                response = chain.invoke({"node_json": json.dumps(context)})
                 
                 if "qa_pairs" in response:
                     for item in response["qa_pairs"]:
                         if len(dataset) >= num_questions: break
-                        if "ground_truth" not in item:
-                            for alias in ["answer", "correct_answer", "result", "Answer"]:
-                                if alias in item:
-                                    item["ground_truth"] = item.pop(alias)
-                                    break
-                        if "ground_truth" not in item:
-                            logger.warning(f"⚠️ Discarded due to missing ground_truth: {item}")
+                        
+                        # Validar que la pregunta no contenga "this node" (filtro de seguridad extra)
+                        q_lower = item["question"].lower()
+                        if "this node" in q_lower or "this entity" in q_lower or "this house" in q_lower:
                             continue
-                        item["question_id"] = f"gen_{len(dataset)}"
-                        item["source_type"] = node.get("type")
+
+                        item["question_id"] = f"neo4j_{len(dataset)}"
+                        item["source_type"] = node_meta["type"]
+                        item["origin_node"] = node_meta["id"]
+                        
                         dataset.append(item)
                         pbar.update(1)
-                else:
-                    logger.warning(f"⚠️ Empty LLM response for node: {node.get('id')}")
-
             except Exception as e:
-                logger.error(f"❌ Error generating for '{node.get('id')}': {str(e)}")
+                # Log level debug para no ensuciar, salvo errores críticos
+                logger.debug(f"⚠️ Error generating for {node_meta['id']}: {e}")
                 continue
         
         pbar.close()
+        self.close()
         
         if dataset:
             os.makedirs(os.path.dirname(self.output_path), exist_ok=True)
@@ -250,10 +261,10 @@ class StratifiedDatasetGenerator:
                 for item in dataset:
                     record = item if isinstance(item, dict) else item.dict()
                     f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            logger.info(f"✅ Dataset generated: {self.output_path} ({len(dataset)} items)")
+            logger.info(f"✅ Dataset successfully generated with {len(dataset)} items.")
         else:
-            logger.error("❌ No questions were generated. Check errors above.")
+            logger.error("❌ No questions were generated.")
 
 if __name__ == "__main__":
-    generator = StratifiedDatasetGenerator(data_dir="data/processed")
+    generator = Neo4jDatasetGenerator()
     generator.generate(num_questions=150)
