@@ -4,7 +4,7 @@ import logging
 import re
 from tqdm import tqdm
 from dotenv import load_dotenv
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from src.utils.logger import setup_logging
 from src.config_manager import ConfigManager
@@ -12,77 +12,48 @@ from src.config_manager import ConfigManager
 # LangChain Imports
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
-# Note: StrOutputParser is used to avoid strict JSON parsing errors
 from langchain_core.output_parsers import StrOutputParser
-from pydantic import BaseModel, Field
 
 setup_logging()
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("google.generativeai").setLevel(logging.WARNING)
-
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-class LLMJudge:
-    def __init__(self, model_name: str = None):
-        if not os.getenv("GOOGLE_API_KEY"):
-            raise ValueError("❌ GOOGLE_API_KEY not found in .env")
+class RAGJudge:
+    """
+    Advanced Judge for RAG Systems. Evaluates three key dimensions:
+    1. Context Recall: Was the necessary information retrieved?
+    2. Faithfulness: Did the model hallucinate information not present in context?
+    3. Answer Correctness: Does the answer match the ground truth?
+    """
 
-        # Load configuration
-        config_manager = ConfigManager()
-        llm_config = config_manager.get_llm_config("judge")
+    def __init__(self):
+        self.config = ConfigManager()
         
-        # Use provided model_name or fall back to config
-        model = model_name or llm_config.get("model", "gemini-2.5-flash")
-
+        # Load LLM settings
+        llm_config = ConfigManager.get_llm_config("judge")
+        model_name = llm_config.get("model_name", "gemini-2.5-flash")
+        
+        # We need a deterministic judge
         self.llm = ChatGoogleGenerativeAI(
-            model=model,
-            temperature=llm_config.get("temperature", 0),
+            model=model_name,
+            temperature=0.0,
             google_api_key=os.getenv("GOOGLE_API_KEY"),
-            max_retries=llm_config.get("max_retries", 3)
+            max_retries=3
         )
+        
         self.chain = self._create_chain()
 
     def _create_chain(self):
-        # Get prompts from config
-        config_manager = ConfigManager()
-        system_prompt = config_manager.get("prompts", "judge", "system", default="""
-        You are an impartial judge evaluating a chatbot's answers about Game of Thrones.
+        """Creates a multi-metric evaluation chain."""
         
-        INPUT DATA:
-        1. QUESTION: The user's query.
-        2. GROUND TRUTH: The correct fact.
-        3. PREDICTION: The chatbot's response.
+        system_prompt = ConfigManager.get("prompts", "judge", "system")
+        human_prompt = ConfigManager.get("prompts", "judge", "human")
 
-        TASK:
-        Determine if the PREDICTION contains the semantic meaning of the GROUND TRUTH.
-        
-        RULES:
-        - Be lenient with phrasing (e.g., "Jon Snow" == "Jon").
-        - Be strict with facts (e.g., "Ned Stark" != "Robb Stark").
-        - If the prediction retrieves wrong info or extra wrong entities, Score is 0.
-        
-        OUTPUT FORMAT:
-        You must return ONLY a raw JSON object. Do not use Markdown code blocks. Do not add explanations outside the JSON.
-        
-        CORRECT EXAMPLE:
-        {{
-            "score": 1,
-            "reason": "The prediction matches the ground truth accurately."
-        }}
-
-        INCORRECT EXAMPLE (Do NOT do this):
-        Score: 0
-        Reason: The answer is wrong because...
-        """)
-
-        human_prompt = config_manager.get("prompts", "judge", "human", default="""
-        QUESTION: {question}
-        GROUND TRUTH: {ground_truth}
-        PREDICTION: {prediction}
-        """)
+        # Verificar que no vengan vacíos (por si acaso)
+        if not system_prompt or not human_prompt:
+            logger.error("❌ Prompts del Juez no encontrados en config.json")
+            raise ValueError("Judge prompts missing")
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
@@ -92,28 +63,32 @@ class LLMJudge:
         return prompt | self.llm | StrOutputParser()
 
     def _robust_parse(self, text_output: str) -> Dict[str, Any]:
-        """Extract JSON from malformed responses, falling back to regex when needed."""
+        """Parses LLM output into a dictionary, handling Markdown or format errors."""
         text = text_output.strip()
-        
-        # 1. Remove markdown code fences if present
         if "```" in text:
             text = text.replace("```json", "").replace("```", "").strip()
         
-        # 2. Try direct JSON parse
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            pass  # JSON parsing failed, try regex
+            # Fallback regex if JSON fails
+            logger.warning(f"⚠️ JSON Parse failed for: {text[:50]}... Attempting regex.")
+            recall = 1 if "context_recall\": 1" in text else 0
+            faith = 1 if "faithfulness\": 1" in text else 0
+            correct = 1 if "correctness\": 1" in text else 0
+            return {
+                "context_recall": recall, 
+                "faithfulness": faith, 
+                "correctness": correct, 
+                "reason": "Parsed via Regex fallback"
+            }
 
-        # 3. Regex-based fallback
-        score_match = re.search(r'(?:score|Score)["\s:]+([01])', text)
-        score = int(score_match.group(1)) if score_match else 0
-        
-        reason = text.replace('"', '').replace('{', '').replace('}', '').strip()
-        return {"score": score, "reason": reason}
+    def evaluate(self):
+        """Main evaluation loop reading from predictions.jsonl."""
+        predictions_path = ConfigManager.get("paths", "eval", "predictions")
+        results_path = ConfigManager.get("paths", "eval", "results")
 
-    def evaluate(self, predictions_path: str, results_path: str):
-        if not os.path.exists(predictions_path):
+        if not predictions_path or not os.path.exists(predictions_path):
             logger.error(f"❌ Predictions file not found: {predictions_path}")
             return
 
@@ -122,63 +97,94 @@ class LLMJudge:
             for line in f:
                 entries.append(json.loads(line))
 
-        logger.info(f"👨‍⚖️ Starting evaluation of {len(entries)} responses...")
-
+        logger.info(f"👨‍⚖️ Evaluating {len(entries)} predictions with Multi-Metric Judge...")
+        
         results = []
-        total_score = 0
+        metrics_sum = {"context_recall": 0, "faithfulness": 0, "correctness": 0}
         valid_items = 0
 
-        for entry in tqdm(entries, desc="Evaluating"):
+        for entry in tqdm(entries, desc="Judging"):
             try:
-                # LLM invocation
-                raw_response = self.chain.invoke({
+                # Prepare context string (handle list or string format)
+                context_raw = entry.get("retrieved_context", "")
+                if isinstance(context_raw, list):
+                    context_str = "\n".join(context_raw)
+                else:
+                    context_str = str(context_raw)
+
+                # Invoke LLM
+                response_str = self.chain.invoke({
                     "question": entry.get("question"),
                     "ground_truth": entry.get("ground_truth"),
+                    "context": context_str[:15000],  # Truncate to avoid token limits
                     "prediction": entry.get("prediction")
                 })
-                
-                # Robust parse
-                parsed_response = self._robust_parse(raw_response)
-                
-                final_record = {
+
+                scores = self._robust_parse(response_str)
+
+                # Build result record
+                record = {
                     "id": entry.get("custom_id"),
                     "question": entry.get("question"),
+                    "type": entry.get("type"),
+                    "source": entry.get("evidence_source"),
+                    "metrics": scores,
                     "prediction": entry.get("prediction"),
-                    "ground_truth": entry.get("ground_truth"),
-                    "score": parsed_response.get("score", 0),
-                    "reason": parsed_response.get("reason", "N/A"),
-                    "type": entry.get("type", "Unknown"),
-                    "evidence_source": entry.get("evidence_source")
+                    "ground_truth": entry.get("ground_truth")
                 }
                 
-                results.append(final_record)
-                total_score += final_record["score"]
+                results.append(record)
+                
+                # Update running totals
+                metrics_sum["context_recall"] += scores.get("context_recall", 0)
+                metrics_sum["faithfulness"] += scores.get("faithfulness", 0)
+                metrics_sum["correctness"] += scores.get("correctness", 0)
                 valid_items += 1
 
             except Exception as e:
-                logger.error(f"❌ Fatal error while evaluating ID {entry.get('custom_id')}: {e}")
-                continue
+                logger.error(f"❌ Error judging {entry.get('custom_id')}: {e}")
 
+        # Save results
         os.makedirs(os.path.dirname(results_path), exist_ok=True)
         with open(results_path, "w", encoding="utf-8") as f:
             for res in results:
                 f.write(json.dumps(res, ensure_ascii=False) + "\n")
 
-        accuracy = (total_score / valid_items) * 100 if valid_items > 0 else 0
-        logger.info(f"\n📊 FINAL RESULTS ({valid_items} items):")
-        logger.info(f"🎯 Overall accuracy: {accuracy:.2f}%")
-        logger.info(f"💾 Results written to: {results_path}")
-        
-        self._print_analytics(results)
+        self._print_analytics(metrics_sum, valid_items, results)
 
-    def _print_analytics(self, results):
-        from collections import defaultdict
-        by_source = defaultdict(list)
+    def _print_analytics(self, sums, total, results):
+        if total == 0:
+            logger.warning("No valid results to analyze.")
+            return
+
+        logger.info("\n📊 === EVALUATION REPORT ===")
+        logger.info(f"Analyzed {total} questions.")
+        
+        # 1. Global Metrics
+        logger.info("\n🔹 GLOBAL METRICS:")
+        logger.info(f"   ✅ Answer Correctness: {(sums['correctness']/total)*100:.2f}% (User Perception)")
+        logger.info(f"   🔍 Context Recall:     {(sums['context_recall']/total)*100:.2f}% (Retriever Quality)")
+        logger.info(f"   🤖 Faithfulness:       {(sums['faithfulness']/total)*100:.2f}% (Hallucination Rate)")
+
+        # 2. Diagnosis Matrix
+        retrieval_failures = 0
+        generation_failures = 0
+        
         for r in results:
-            src = r.get("evidence_source", "Unknown")
-            by_source[src].append(r["score"])
-            
-        print("\n📈 Breakdown by source:")
-        for source, scores in by_source.items():
-            avg = (sum(scores) / len(scores)) * 100 if scores else 0
-            print(f"   - {source}: {avg:.2f}% ({len(scores)} questions)")
+            m = r["metrics"]
+            # Retrieval failed if context didn't have the answer
+            if m["context_recall"] == 0:
+                retrieval_failures += 1
+            # Generation failed if context HAD answer, but final answer was WRONG
+            elif m["context_recall"] == 1 and m["correctness"] == 0:
+                generation_failures += 1
+        
+        logger.info("\n🔹 DIAGNOSIS (Where to improve?):")
+        logger.info(f"   📉 Retrieval Failures: {retrieval_failures} items (Graph/Vector didn't find info)")
+        logger.info(f"   🧠 Reasoning Failures: {generation_failures} items (LLM had info but failed to answer)")
+
+        logger.info(f"\n💾 Detailed results saved to: {ConfigManager.get('paths', 'eval', 'results')}")
+
+if __name__ == "__main__":
+    judge = RAGJudge()
+    judge.evaluate()

@@ -12,16 +12,7 @@ class Neo4jLoader:
     """Load graph nodes and edges into Neo4j from JSONL sources."""
 
     def __init__(self, data_dir: str):
-        """Initialize the loader with database connection and source paths.
-
-        Environment variables used (with defaults):
-        - NEO4J_URI (default: bolt://localhost:7687)
-        - NEO4J_USER (default: neo4j)
-        - NEO4J_PASSWORD (default: password)
-
-        Args:
-            data_dir: Directory containing node and edge JSONL files.
-        """
+        """Initialize the loader with database connection and source paths."""
         load_dotenv()
 
         uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
@@ -30,13 +21,20 @@ class Neo4jLoader:
 
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
 
-        # Get batch sizes from config
-        config_manager = ConfigManager()
-        db_config = config_manager.get("database", "neo4j", default={})
+        # Get settings from config
+        self.config_manager = ConfigManager()
+        db_config = self.config_manager.get("database", "neo4j", default={})
         batch_config = db_config.get("batch_sizes", {})
+        
         self.batch_size_nodes = batch_config.get("nodes", 1000)
         self.batch_size_edges = batch_config.get("edges", 1000)
         self.timeout = db_config.get("timeout", 30)
+
+        # Get ontology types for indexing
+        graph_settings = self.config_manager.get("graph_settings", default={})
+        self.allowed_types = graph_settings.get("allowed_types", [
+            "Character", "House", "Location", "Battle", "Object", "Organization"
+        ])
 
         # Prefer validated nodes; fall back to raw nodes if absent
         self.nodes_path = os.path.join(data_dir, "nodes_cleaned.jsonl")
@@ -54,10 +52,11 @@ class Neo4jLoader:
         logger.warning("🗑️  Wiping Neo4j Database...")
         with self.driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n")
+            session.run("DROP INDEX entity_index IF EXISTS")
 
     def create_constraints(self):
         """Create uniqueness constraints per node label based on the `id` property."""
-        logger.info("⚡ Creating Indexes & Constraints...")
+        logger.info("⚡ Creating Constraints...")
 
         # Discover node labels present in the source data
         node_types = set()
@@ -80,6 +79,35 @@ class Neo4jLoader:
                     session.run(query)
                 except Exception as e:
                     logger.warning(f"Could not create constraint for {clean_label}: {e}")
+
+    def create_fulltext_index(self):
+        """Create a fulltext index across all entity types for fuzzy search."""
+        logger.info("🔍 Creating Fulltext Index 'entity_index'...")
+        
+        # 1. Sanitize labels (Neo4j labels shouldn't have weird chars)
+        valid_labels = ["".join(x for x in l if x.isalnum()) for l in self.allowed_types]
+        
+        # 2. Construct the label string: Label1|Label2|Label3
+        labels_clause = "|".join(valid_labels)
+        
+        if not labels_clause:
+            logger.warning("⚠️ No allowed types found in config. Skipping fulltext index.")
+            return
+
+        # 3. Create Index on 'id' and 'name' properties
+        # This allows: CALL db.index.fulltext.queryNodes("entity_index", "Jon Snow")
+        query = f"""
+        CREATE FULLTEXT INDEX entity_index IF NOT EXISTS 
+        FOR (n:{labels_clause}) 
+        ON EACH [n.id, n.name]
+        """
+        
+        with self.driver.session() as session:
+            try:
+                session.run(query)
+                logger.info("✅ Fulltext Index 'entity_index' created successfully.")
+            except Exception as e:
+                logger.error(f"❌ Failed to create fulltext index: {e}")
 
     def load_nodes(self):
         """Bulk load nodes grouped by type."""
@@ -109,12 +137,9 @@ class Neo4jLoader:
                     # 3. Convert all values to strings (fully flattened)
                     for key, val in list(props.items()):
                         if isinstance(val, list):
-                            # Empty list -> empty string
                             if not val:
                                 props[key] = ""
                             else:
-                                # Join list items with commas
-                                # Example: ["Rhaena", "Jaehaerys"] -> "Rhaena, Jaehaerys"
                                 props[key] = ", ".join(str(x) for x in val)
                     
                     # 4. Ensure required fields
@@ -185,10 +210,11 @@ class Neo4jLoader:
                     session.run(query, batch=batch)
 
     def run(self):
-        """Execute the full load pipeline: clean DB, add constraints, load nodes, then edges."""
+        """Execute the full load pipeline: clean DB, constraints, indexes, nodes, edges."""
         try:
             self.clean_db()
             self.create_constraints()
+            self.create_fulltext_index()
             self.load_nodes()
             self.load_edges()
             logger.info("✅ Neo4j Ingestion Complete!")
@@ -198,6 +224,5 @@ class Neo4jLoader:
             self.close()
 
 if __name__ == "__main__":
-    # Direct run
     loader = Neo4jLoader(data_dir="data/processed")
     loader.run()
