@@ -151,11 +151,34 @@ Extract entities and relationships from raw data:
 
 ```bash
 # Build with heuristics only (fast)
-python main.py build
+python main.py build --use_heuristic
 
 # Build with LLM validation (more accurate, requires API key)
-python main.py build --use-llm
+python main.py build --use-llm --clean-llm
 ```
+
+### 3. Run Retrieval-Augmented Generation (RAG) Chatbot
+
+3.1. **(Run the Neo4j instance)**
+
+```bash
+docker-compose -f docker-compose.yml up -d
+```
+
+3.2. **Start the RAG Chatbot**
+
+Run the Streamlit app:
+
+```bash
+uv run streamlit run src/app.py
+```
+
+Run the CLI chatbot:
+
+```bash
+uv run python test_rag.py
+```
+
 
 **Pipeline Steps:**
 
