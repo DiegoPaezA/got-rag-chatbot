@@ -11,7 +11,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from src.utils.logger import setup_logging
 from src.rag.graph_search import GraphSearcher
-from langchain_google_genai import ChatGoogleGenerativeAI
+from src.config_manager import ConfigManager
+from src.utils.llm_factory import LLMFactory
 from langchain_core.prompts import PromptTemplate
 
 setup_logging()
@@ -24,13 +25,17 @@ class GraphEvaluator:
     def __init__(self):
         load_dotenv()
         self.searcher = GraphSearcher()
-        
+
+        cfg = ConfigManager()
+        cfg.load("cfg/config.json")
+        llm_cfg = cfg.get_llm_config("judge")
+        provider = llm_cfg.get("provider", "google")
         # Strict judge
-        self.judge = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            temperature=0.0,
-            google_api_key=os.getenv("GOOGLE_API_KEY")
-        )
+        self.judge = LLMFactory.create_llm({
+            "model_name": llm_cfg.get("model_name", llm_cfg.get("model", "gemini-2.5-flash")),
+            "temperature": llm_cfg.get("temperature", 0.0),
+            "max_retries": llm_cfg.get("max_retries", 3)
+        }, provider=provider)
 
     def evaluate_result(self, question, ground_truth, db_result, generated_cypher):
         """Ask the LLM to decide if DB JSON contains the correct answer."""

@@ -5,16 +5,18 @@ from typing import List, Dict, Any, Tuple
 from dotenv import load_dotenv
 
 from langchain_chroma import Chroma
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import PromptTemplate
 
 from src.rag.graph_search import GraphSearcher
 from src.config_manager import ConfigManager
+from src.utils.llm_factory import LLMFactory
 
 logger = logging.getLogger("HybridRetriever")
 
 class HybridRetriever:
-    def __init__(self, data_dir: str = "data/processed", config_path: str = "cfg/config.json"):
+    def __init__(self, data_dir: str = "data/processed", config_path: str = "cfg/config.json", llm: BaseChatModel | None = None):
         """Initialize retriever with graph and vector backends plus query rewriter.
 
         Args:
@@ -25,6 +27,7 @@ class HybridRetriever:
         
         # Load configuration using ConfigManager
         config_manager = ConfigManager()
+        config_manager.load(config_path)
         llm_config = config_manager.get_llm_config("retriever")
         embedding_config = config_manager.get("embedding_settings", default={})
         processing_config = config_manager.get_processing_config("retriever")
@@ -49,11 +52,11 @@ class HybridRetriever:
         else:
             self.vector_store = None
 
-        self.llm = ChatGoogleGenerativeAI(
-            model=llm_config.get("model", "gemini-2.5-flash"),
-            temperature=llm_config.get("temperature", 0),
-            google_api_key=os.getenv("GOOGLE_API_KEY")
-        )
+        if llm is not None:
+            self.llm = llm
+        else:
+            provider = llm_config.get("provider", "google")
+            self.llm = LLMFactory.create_llm(llm_config, provider=provider)
         
         # Store search parameters from config
         self.vector_search_k = processing_config.get("vector_search_k", 5)

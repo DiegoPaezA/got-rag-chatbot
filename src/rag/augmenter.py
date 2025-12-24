@@ -4,10 +4,11 @@ import os
 from typing import List, Dict, Any
 from dotenv import load_dotenv
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from src.config_manager import ConfigManager
+from src.utils.llm_factory import LLMFactory
 
 logger = logging.getLogger("ContextAugmenter")
 
@@ -18,26 +19,28 @@ class ContextAugmenter:
     graph records and formatting vector snippets.
     """
 
-    def __init__(self, config_path: str = "cfg/config.json"):
+    def __init__(self, config_path: str = "cfg/config.json", llm: BaseChatModel | None = None):
         """Initialize augmenter and its internal LLM.
 
         Args:
             config_path: Path to configuration file for LLM settings.
+            llm: Optional pre-instantiated chat model (for dependency injection/testing).
         """
         load_dotenv()
         
         # Load configuration using ConfigManager
         config_manager = ConfigManager()
+        config_manager.load(config_path)
         llm_config = config_manager.get_llm_config("augmenter")
         
         # Internal LLM instance (temperature 0 for factual fidelity)
-        self.llm = ChatGoogleGenerativeAI(
-            model=llm_config.get("model", "gemini-2.5-flash"),
-            temperature=llm_config.get("temperature", 0),
-            google_api_key=os.getenv("GOOGLE_API_KEY")
-        )
+        if llm is not None:
+            self.llm = llm
+        else:
+            provider = llm_config.get("provider", "google")
+            self.llm = LLMFactory.create_llm(llm_config, provider=provider)
         
-        logger.info(f"🧠 Augmenter initialized with internal model: {llm_config.get('model', 'gemini-2.5-flash')}")
+        logger.info(f"🧠 Augmenter initialized with internal model: {llm_config.get('model_name', llm_config.get('model', 'gemini-2.5-flash'))}")
 
         # Data Analyst prompt from config
         prompt_template = config_manager.get("prompts", "augmenter", "narrator", default="""

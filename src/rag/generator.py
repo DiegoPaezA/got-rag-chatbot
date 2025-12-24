@@ -1,9 +1,10 @@
 import os
 import logging
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import PromptTemplate
 from dotenv import load_dotenv
 from src.config_manager import ConfigManager
+from src.utils.llm_factory import LLMFactory
 
 logger = logging.getLogger("RAGGenerator")
 
@@ -12,24 +13,26 @@ class RAGGenerator:
     Pure Generator: Receives a pre-processed context string and generates an answer.
     """
 
-    def __init__(self, config_path: str = "cfg/config.json"):
+    def __init__(self, config_path: str = "cfg/config.json", llm: BaseChatModel | None = None):
         """Initialize the generator and its LLM backend.
 
         Args:
-            config_path: Optional future use for custom prompts/settings.
+            config_path: Path to configuration file.
+            llm: Optional pre-instantiated chat model (for dependency injection/testing).
         """
         load_dotenv()
         
         # Load configuration
         config_manager = ConfigManager()
+        config_manager.load(config_path)
         llm_config = config_manager.get_llm_config("generator")
-        
-        # Init LLM
-        self.llm = ChatGoogleGenerativeAI(
-            model=llm_config.get("model", "gemini-2.5-flash"),
-            temperature=llm_config.get("temperature", 0.3),
-            google_api_key=os.getenv("GOOGLE_API_KEY")
-        )
+
+        # Init or inject LLM
+        if llm is not None:
+            self.llm = llm
+        else:
+            provider = llm_config.get("provider", "google")
+            self.llm = LLMFactory.create_llm(llm_config, provider=provider)
 
         # Get prompt template from config
         self.default_prompt = config_manager.get("prompts", "generator", "system", default="""

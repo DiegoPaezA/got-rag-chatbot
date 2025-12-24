@@ -4,26 +4,28 @@ import logging
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import PromptTemplate
 from neo4j import GraphDatabase
 from neo4j.graph import Node, Relationship
-# from neo4j.time import DateTime  # Descomentar si usas tipos nativos de tiempo explícitos
+# from neo4j.time import DateTime  # Uncomment if using native time types explicitly
 from src.config_manager import ConfigManager
+from src.utils.llm_factory import LLMFactory
 
 logger = logging.getLogger("GraphSearch")
 
 class GraphSearcher:
     """Generate Cypher from natural language and query Neo4j."""
 
-    def __init__(self, config_path: str = "cfg/config.json"):
+    def __init__(self, config_path: str = "cfg/config.json", llm: BaseChatModel | None = None):
         """Initialize graph searcher with LLM and Neo4j settings from config."""
         load_dotenv()
         
         # Load configuration
         config_manager = ConfigManager()
+        config_manager.load(config_path)
         llm_config = config_manager.get_llm_config("graph_search")
-        model_name = llm_config.get("model", "gemini-2.5-flash")
+        model_name = llm_config.get("model_name", llm_config.get("model", "gemini-2.5-flash"))
         temperature = llm_config.get("temperature", 0.0)
 
         logger.info(f"⚙️ Initializing Graph Searcher with model: {model_name} (T={temperature})")
@@ -34,14 +36,11 @@ class GraphSearcher:
         self.neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
         self.driver = None 
 
-        if not os.getenv("GOOGLE_API_KEY"):
-            raise ValueError("❌ GOOGLE_API_KEY not found in .env")
-
-        self.llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            temperature=temperature,
-            google_api_key=os.getenv("GOOGLE_API_KEY")
-        )
+        if llm is not None:
+            self.llm = llm
+        else:
+            provider = llm_config.get("provider", "google")
+            self.llm = LLMFactory.create_llm(llm_config, provider=provider)
 
         self._schema_cache: Optional[str] = None
 

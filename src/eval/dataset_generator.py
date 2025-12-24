@@ -8,12 +8,13 @@ from tqdm import tqdm
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
 
 from src.config_manager import ConfigManager
+from src.utils.llm_factory import LLMFactory
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -44,11 +45,17 @@ class QABatch(BaseModel):
 class Neo4jDatasetGenerator:
     """Generates a Ground Truth QA dataset using live data from Neo4j."""
 
-    def __init__(self):
-        """Initialize Neo4j connection and LLM based on configuration."""
+    def __init__(self, config_path: str = "cfg/config.json", llm: BaseChatModel | None = None):
+        """Initialize Neo4j connection and LLM based on configuration.
+
+        Args:
+            config_path: Path to configuration file.
+            llm: Optional pre-instantiated chat model for dependency injection/testing.
+        """
         self.config = ConfigManager()
+        self.config.load(config_path)
         
-        # Rutas desde config
+        # Paths from config
         self.output_path = ConfigManager.get("paths", "eval", "golden_dataset")
         if not self.output_path:
             self.output_path = "data/eval/golden_dataset_neo4j.jsonl"
@@ -67,21 +74,24 @@ class Neo4jDatasetGenerator:
             logger.error(f"❌ Error connecting to Neo4j: {e}")
             raise e
 
-        # Configuración LLM (Generator)
-        llm_config = ConfigManager.get_llm_config("generator")
-        model_name = llm_config.get("model_name", "gemini-2.5-flash")
-        
-        # Temperatura BAJA para asegurar JSON válido y seguimiento de reglas
-        temperature = 0.1 
-        
-        logger.info(f"🤖 Initializing LLM Generator: {model_name} (Temp: {temperature})")
+        # LLM configuration (component-specific)
+        llm_config = ConfigManager.get_llm_config("dataset_generator")
+        # Backward compatibility defaults
+        model_name = llm_config.get("model_name", llm_config.get("model", "gemini-2.5-flash"))
+        temperature = llm_config.get("temperature", 0.1)
+        llm_config = {
+            **llm_config,
+            "model_name": model_name,
+            "temperature": temperature,
+            "max_retries": llm_config.get("max_retries", 3),
+        }
 
-        self.llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            temperature=temperature,
-            google_api_key=os.getenv("GOOGLE_API_KEY"),
-            max_retries=3
-        )
+        if llm is not None:
+            self.llm = llm
+        else:
+            provider = llm_config.get("provider", "google")
+            logger.info(f"🤖 Initializing LLM Generator: {model_name} (Temp: {temperature}) | Provider: {provider}")
+            self.llm = LLMFactory.create_llm(llm_config, provider=provider)
 
     def close(self):
         self.driver.close()

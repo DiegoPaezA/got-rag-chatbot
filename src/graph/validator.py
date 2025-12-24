@@ -7,10 +7,11 @@ from tqdm import tqdm
 from typing import List, Dict, Any, Set
 from dotenv import load_dotenv
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from src.config_manager import ConfigManager
+from src.utils.llm_factory import LLMFactory
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ class GraphValidator:
     and produces nodes_validated.jsonl with corrected types.
     """
     
-    def __init__(self, data_dir: str, config_path: str = "cfg/config.json") -> None:
+    def __init__(self, data_dir: str, config_path: str = "cfg/config.json", llm: BaseChatModel | None = None) -> None:
         """Initialize validator with paths and configuration.
         
         Args:
@@ -55,15 +56,17 @@ class GraphValidator:
         
         # Load Configuration using ConfigManager
         config_manager = ConfigManager()
+        config_manager.load(config_path)
         validator_config = config_manager.get_processing_config("validator")
         
         self.batch_size = validator_config.get("batch_size", 10)
         self.max_text_length = validator_config.get("max_text_length", 600)
         self.min_text_length = validator_config.get("min_text_length", 20)
         
-        self.llm_settings = config_manager.get("llm_settings", default={})
+        self.llm_settings = config_manager.get_llm_config("validator")
         self.prompts = config_manager.get("prompts", default={})
         self.allowed_types = config_manager.get("graph_settings", "allowed_types", default=[])
+        self._injected_llm = llm
 
     def validate(self) -> None:
         """Main validation entrypoint: validate node types against knowledge base.
@@ -80,15 +83,13 @@ class GraphValidator:
             logger.error("❌ GOOGLE_API_KEY missing.")
             return
 
-        model_name = self.llm_settings.get("model_name", "gemini-2.5-flash")
+        model_name = self.llm_settings.get("model_name", self.llm_settings.get("model", "gemini-2.5-flash"))
+        provider = self.llm_settings.get("provider", "google")
         logger.info(f"🤖 Initializing LLM validation ({model_name})")
 
         # Setup LLM and prompt templates from configuration
-        llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            temperature=self.llm_settings.get("temperature", 0.0),
-            max_retries=self.llm_settings.get("max_retries", 5),
-        ).with_structured_output(BatchValidationResult)
+        base_llm = self._injected_llm or LLMFactory.create_llm(self.llm_settings, provider=provider)
+        llm = base_llm.with_structured_output(BatchValidationResult)
 
         system_tmpl = self.prompts.get("validator_system", "")
         human_tmpl = self.prompts.get("validator_human", "{input_data}")

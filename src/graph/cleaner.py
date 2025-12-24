@@ -10,8 +10,9 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 
 from pydantic import BaseModel, Field
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
+from src.utils.llm_factory import LLMFactory
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class GraphCleaner:
         "children", "various", "numerous"
     }
 
-    def __init__(self, data_dir: str, config_path: str = "cfg/config.json"):
+    def __init__(self, data_dir: str, config_path: str = "cfg/config.json", llm: BaseChatModel | None = None):
         self.data_dir = data_dir
 
         # Prefer validated nodes; fall back to raw nodes if absent.
@@ -70,6 +71,7 @@ class GraphCleaner:
         self.config = self._load_config(config_path)
         self.llm_settings = self.config.get("llm_settings", {})
         self.prompts = self.config.get("prompts", {})
+        self._injected_llm = llm
 
         # Properties to normalize
         self.target_keys: Set[str] = {
@@ -128,17 +130,16 @@ class GraphCleaner:
         if not os.getenv("GOOGLE_API_KEY"):
             raise ValueError("❌ GOOGLE_API_KEY not found in environment.")
 
-        model_name = self.llm_settings.get("model_name", "gemini-2.5-flash")
+        model_name = self.llm_settings.get("model_name", self.llm_settings.get("model", "gemini-2.5-flash"))
         temperature = self.llm_settings.get("temperature", 0.0)
         max_retries_llm = self.llm_settings.get("max_retries", 5)
+        provider = self.llm_settings.get("provider", "google")
 
         logger.info(f"🧹 Initializing GraphCleaner LLM: {model_name} (T={temperature})")
 
-        llm_raw = ChatGoogleGenerativeAI(
-            model=model_name,
-            temperature=temperature,
-            google_api_key=os.getenv("GOOGLE_API_KEY"),
-            max_retries=max_retries_llm,
+        llm_raw = self._injected_llm or LLMFactory.create_llm(
+            self.llm_settings,
+            provider=provider
         )
 
         llm = llm_raw.with_structured_output(BatchCleaningResult)

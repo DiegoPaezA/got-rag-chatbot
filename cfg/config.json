@@ -19,35 +19,48 @@
     }
   },
   "llm_settings": {
+    "provider": "google",
     "model_name": "gemini-2.5-flash-preview-09-2025",
     "temperature": 0.0,
     "max_retries": 3,
     "components": {
       "generator": {
+        "provider": "google",
         "model_name": "gemini-2.5-flash",
         "temperature": 0.1
       },
       "augmenter": {
+        "provider": "google",
         "model_name": "gemini-2.5-flash",
         "temperature": 0.0
       },
       "judge": {
+        "provider": "google",
         "model_name": "gemini-2.5-flash",
         "temperature": 0.0,
         "max_retries": 3
       },
       "validator": {
+        "provider": "google",
         "model_name": "gemini-2.5-flash-preview-09-2025",
         "temperature": 0.0,
         "max_retries": 5
       },
       "retriever": {
+        "provider": "google",
         "model_name": "gemini-2.5-flash",
         "temperature": 0.0
       },
       "graph_search": {
+        "provider": "google",
         "model_name": "gemini-2.5-flash",
         "temperature": 0.0
+      },
+      "dataset_generator": {
+        "provider": "google",
+        "model_name": "gemini-2.5-flash",
+        "temperature": 0.1,
+        "max_retries": 3
       }
     }
   },

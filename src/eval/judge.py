@@ -10,9 +10,10 @@ from src.utils.logger import setup_logging
 from src.config_manager import ConfigManager
 
 # LangChain Imports
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from src.utils.llm_factory import LLMFactory
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -27,20 +28,20 @@ class RAGJudge:
     3. Answer Correctness: Does the answer match the ground truth?
     """
 
-    def __init__(self):
+    def __init__(self, llm: BaseChatModel | None = None, config_path: str = "cfg/config.json"):
         self.config = ConfigManager()
+        self.config.load(config_path)
         
         # Load LLM settings
         llm_config = ConfigManager.get_llm_config("judge")
-        model_name = llm_config.get("model_name", "gemini-2.5-flash")
+        provider = llm_config.get("provider", "google")
+        model_name = llm_config.get("model_name", llm_config.get("model", "gemini-2.5-flash"))
         
-        # We need a deterministic judge
-        self.llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            temperature=0.0,
-            google_api_key=os.getenv("GOOGLE_API_KEY"),
-            max_retries=3
-        )
+        # Deterministic judge LLM
+        if llm is not None:
+            self.llm = llm
+        else:
+            self.llm = LLMFactory.create_llm(llm_config, provider=provider)
         
         self.chain = self._create_chain()
 
